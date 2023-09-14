@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 )
 
 type node struct {
 	value     string
+	visited   bool
 	neighbors map[uint64]*node
 }
 
@@ -21,56 +21,74 @@ func main() {
 	}
 
 	br := bufio.NewReader(f)
-
-	// infinite loop
-	prev := int(0)
-	count := 0
-	amount := 100
+	all := map[string]*node{}
+	first := &node{
+		value:     "",
+		neighbors: map[uint64]*node{},
+	}
+	current := first
+	amount := 1024 * 1024
+	count := uint64(0)
+	unique := uint64(0)
+	length := 5
 	for i := 0; i < amount; i++ {
-
-		b, err := br.ReadByte()
-
+		slice := make([]byte, length)
+		_, err := io.ReadFull(br, slice)
 		if err != nil && !errors.Is(err, io.EOF) {
-			fmt.Println(err)
-			break
+			panic(err)
 		}
-
-		delta := int(b) - prev
-		fmt.Println(string([]byte{b}), b, prev, delta)
-		prev = int(b)
-		count += bitcount(delta)
-
-		if err != nil {
-			// end of file
+		key := string(slice)
+		next, ok := all[key]
+		if !ok {
+			next = &node{
+				value:     key,
+				neighbors: map[uint64]*node{},
+			}
+			all[next.value] = next
+			unique++
+		}
+		_, exists := current.neighbors[count]
+		if exists {
+			count++
+		}
+		current.neighbors[count] = next
+		fmt.Printf("\roverlap:%v processed:%v", count, i*4)
+		current = next
+		if err == io.EOF {
 			break
 		}
 	}
-	fmt.Println("original bytes: ", amount)
-	fmt.Println("target bytes:", amount/10)
-	fmt.Println("compressed bytes: ", count/8)
-}
-
-func bitcount(value int) int {
-	v := math.Abs(float64(value))
-	return 1
-	if v == 0 {
-		return 1
-	} else if v == 1 {
-		return 2
-	} else if v <= 2 {
-		return 3
-	} else if v <= 4 {
-		return 4
-	} else if v <= 8 {
-		return 5
-	} else if v <= 16 {
-		return 6
-	} else if v <= 32 {
-		return 6
-	} else if v <= 64 {
-		return 6
-	} else if v <= 128 {
-		return 6
+	fmt.Println("")
+	fmt.Println("summary:")
+	fmt.Println("key size: ", len(all)*length)
+	fmt.Println("unique: ", unique)
+	fmt.Println("sample:")
+	i := 0
+	for k, v := range all {
+		if i == 10 {
+			break
+		}
+		i++
+		fmt.Printf("%v: %v\n", k, v)
 	}
-	return 7
+	fmt.Println("rebuilt:")
+	current = first
+	count = 0
+	for i := 0; i < 100; i++ {
+		fmt.Printf("%v", current.value)
+
+		c, ok := current.neighbors[count]
+		if !ok {
+			break
+		}
+		current = c
+		if current.visited == true {
+			for first.visited {
+				first.visited = false
+				first = first.neighbors[count]
+			}
+			count++
+		}
+		current.visited = true
+	}
 }
