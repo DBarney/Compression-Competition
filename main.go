@@ -27,17 +27,15 @@ func main() {
 		neighbors: map[uint64]*node{},
 	}
 	current := first
-	amount := 1024 * 1024
+	amount := 1024 * 1024 * 1024
 	count := uint64(0)
 	unique := uint64(0)
 	length := 5
 	for i := 0; i < amount; i++ {
-		slice := make([]byte, length)
-		_, err := io.ReadFull(br, slice)
+		key, err := br.ReadString(' ')
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
-		key := string(slice)
 		next, ok := all[key]
 		if !ok {
 			next = &node{
@@ -52,7 +50,7 @@ func main() {
 			count++
 		}
 		current.neighbors[count] = next
-		fmt.Printf("\roverlap:%v processed:%v", count, i*4)
+		fmt.Printf("\rkeys %v overlap:%v processed:%v", len(all), count, i*4)
 		current = next
 		if err == io.EOF {
 			break
