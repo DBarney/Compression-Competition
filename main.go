@@ -11,6 +11,11 @@ import (
 	"slices"
 )
 
+type skip struct {
+	count uint32
+	next  byte
+}
+
 type node struct {
 	value   uint32
 	next    map[byte]uint32
@@ -79,23 +84,58 @@ func main() {
 		node.ordered = ord
 	}
 	fmt.Println("building diff")
+	_, err = f.Seek(4, 0)
+	if err != nil {
+		panic(err)
+	}
+	br = bufio.NewReader(f)
+	buf := []byte{0, 0, 0, 0}
+	binary.BigEndian.PutUint32(buf, first)
+	count := uint32(0)
+	skips := []*skip{}
+	for {
+		b, err := br.ReadByte()
+		if err != nil && !errors.Is(err, io.EOF) {
+			panic(err)
+		}
+		key := binary.BigEndian.Uint32(buf)
+		node := all[key]
+		if len(node.ordered) == 0 {
+			break
+		}
+		buf = append(buf[1:], b)
+		if node.ordered[0] == b {
+			count++
+		} else {
+			skips = append(skips, &skip{
+				count: count,
+				next:  b,
+			})
+			count = 0
+		}
+		if err != nil {
+			break
+		}
+	}
+	fmt.Println("")
 
 	fmt.Println("summary:")
 	fmt.Println("key size: ", len(all)*length)
 	fmt.Println("unique: ", len(all))
-	fmt.Println("example:")
+	/*
+		fmt.Println("example:")
 
-	buf := []byte{0, 0, 0, 0}
-	binary.BigEndian.PutUint32(buf, first)
-	fmt.Printf("%v", string(buf))
-	for i = 0; i < 100; i++ {
-		key := binary.BigEndian.Uint32(buf)
-		node := all[key]
-		b := node.ordered[0]
-		buf = append(buf[1:], b)
-		fmt.Printf("%v", string([]byte{b}))
-	}
-
+		buf = []byte{0, 0, 0, 0}
+		binary.BigEndian.PutUint32(buf, first)
+		fmt.Printf("%v", string(buf))
+		for i = 0; i < 100; i++ {
+			key := binary.BigEndian.Uint32(buf)
+			node := all[key]
+			b := node.ordered[0]
+			buf = append(buf[1:], b)
+			fmt.Printf("%v", string([]byte{b}))
+		}
+	*/
 	kf, err := os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
 	if err != nil {
 		panic(err)
@@ -123,5 +163,19 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	}
+	_, err = kf.Write([]byte{0, 0, 0, 0})
+	if err != nil {
+		panic(err)
+	}
+	out := []byte{}
+	for _, skip := range skips {
+		binary.AppendUvarint(out, uint64(skip.count))
+		out = append(out, skip.next)
+	}
+	fmt.Println("skiplist size: ", len(out))
+	_, err = kf.Write(out)
+	if err != nil {
+		panic(err)
 	}
 }
