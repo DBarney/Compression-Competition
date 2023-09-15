@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"slices"
 )
 
 type node struct {
@@ -27,10 +29,10 @@ func main() {
 		neighbors: map[uint64]*node{},
 	}
 	current := first
-	amount := 1024 * 1024
+	amount := 1024 * 1024 * 1024
 	count := uint64(0)
 	unique := uint64(0)
-	length := 5
+	length := 4
 	for i := 0; i < amount; i++ {
 		slice := make([]byte, length)
 		_, err := io.ReadFull(br, slice)
@@ -52,7 +54,7 @@ func main() {
 			count++
 		}
 		current.neighbors[count] = next
-		fmt.Printf("\roverlap:%v processed:%v", count, i*4)
+		fmt.Printf("\rkeys %v overlap:%v processed:%v", len(all), count, i*4)
 		current = next
 		if err == io.EOF {
 			break
@@ -90,5 +92,54 @@ func main() {
 			count++
 		}
 		current.visited = true
+	}
+	keys := []string{}
+	for k := range all {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	keyf, err := os.OpenFile("keys", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		panic(err)
+	}
+	defer keyf.Close()
+	valuesf, err := os.OpenFile("values", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
+	if err != nil {
+		panic(err)
+	}
+	defer valuesf.Close()
+	pkey := uint32(0)
+	for _, k := range keys {
+		num := binary.LittleEndian.Uint32([]byte(k))
+		buf := make([]byte, 10)
+		delta := uint64(num - pkey)
+		n := binary.PutUvarint(buf, delta)
+		_, err := keyf.Write(buf[:n])
+		if err != nil {
+			panic(err)
+		}
+		pnum := uint64(0)
+		nkeys := []uint64{}
+		// maps don't do smallet to biggest, so we need to sort
+		for pos := range all[k].neighbors {
+			nkeys = append(nkeys, pos)
+		}
+		slices.Sort(nkeys)
+		for _, pos := range nkeys {
+			delta := pos - pnum
+
+			n := binary.PutUvarint(buf, delta)
+			_, err := valuesf.Write(buf[:n])
+			if err != nil {
+				panic(err)
+			}
+			pnum = pos
+
+		}
+		_, err = valuesf.Write([]byte{0, 0})
+		if err != nil {
+			panic(err)
+		}
+		pkey = num
 	}
 }
