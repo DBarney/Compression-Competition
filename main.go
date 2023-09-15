@@ -169,7 +169,12 @@ func main() {
 		panic(err)
 	}
 	out := []byte{}
+	i = 0
 	for _, skip := range skips {
+		if i < 10 {
+			fmt.Println("skipping ", skip.count, skip.next)
+		}
+		i++
 		binary.AppendUvarint(out, uint64(skip.count))
 		out = append(out, skip.next)
 	}
