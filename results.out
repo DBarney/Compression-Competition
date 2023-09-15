@@ -1,0 +1,18 @@
+total 1.6G
+drwxr-xr-x  3 debian debian 4.0K Sep 15 11:31 .
+drwxr-xr-x 44 debian debian 4.0K Sep 15 11:31 ..
+drwxr-xr-x  8 debian debian 4.0K Sep 15 03:47 .git
+-rw-r--r--  1 debian debian 954M Jun  1  2011 enwik9
+-rw-r--r--  1 debian debian   27 Sep 14 02:59 go.mod
+-rwxr-xr-x  1 debian debian 7.6M Sep 15 04:22 keys
+-rwxr-xr-x  1 debian debian 1.8M Sep 14 22:08 keys1
+-rwxr-xr-x  1 debian debian 1.8M Sep 14 22:20 keys10
+-rwxr-xr-x  1 debian debian 5.3M Sep 14 22:44 keys100
+-rw-r--r--  1 debian debian 1.2K Sep 15 11:31 main.go
+-rwxr-xr-x  1 debian debian 532K Sep 14 21:58 results
+-rw-r--r--  1 debian debian    0 Sep 15 11:31 results.out
+-rwxr-xr-x  1 debian debian 350K Sep 14 21:38 results1
+-rwxr-xr-x  1 debian debian 386M Sep 15 04:22 values
+-rwxr-xr-x  1 debian debian  31M Sep 14 22:08 values1
+-rwxr-xr-x  1 debian debian  18M Sep 14 22:20 values10
+-rwxr-xr-x  1 debian debian 166M Sep 14 22:44 values100
