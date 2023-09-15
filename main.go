@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -11,9 +12,10 @@ import (
 )
 
 type node struct {
-	value     string
-	visited   bool
-	neighbors map[uint64]*node
+	value      string
+	compressed uint32
+	order      uint64
+	count      uint64
 }
 
 func main() {
@@ -21,18 +23,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
 	br := bufio.NewReader(f)
 	all := map[string]*node{}
-	first := &node{
-		value:     "",
-		neighbors: map[uint64]*node{},
-	}
-	current := first
-	amount := 1024 * 1024 * 1024
-	count := uint64(0)
-	unique := uint64(0)
+	order := []*node{}
 	length := 4
+	amount := 1024 / length
 	for i := 0; i < amount; i++ {
 		slice := make([]byte, length)
 		_, err := io.ReadFull(br, slice)
@@ -43,19 +38,17 @@ func main() {
 		next, ok := all[key]
 		if !ok {
 			next = &node{
-				value:     key,
-				neighbors: map[uint64]*node{},
+				value:      key,
+				compressed: binary.LittleEndian.Uint32(slice),
+				count:      1,
+				order:      uint64(i),
 			}
 			all[next.value] = next
-			unique++
+		} else {
+			next.count++
 		}
-		_, exists := current.neighbors[count]
-		if exists {
-			count++
-		}
-		current.neighbors[count] = next
-		fmt.Printf("\rkeys %v overlap:%v processed:%v", len(all), count, i*4)
-		current = next
+		order = append(order, next)
+		fmt.Printf("\rkeys %v processed:%v", len(all), i*4)
 		if err == io.EOF {
 			break
 		}
@@ -63,83 +56,30 @@ func main() {
 	fmt.Println("")
 	fmt.Println("summary:")
 	fmt.Println("key size: ", len(all)*length)
-	fmt.Println("unique: ", unique)
-	fmt.Println("sample:")
-	i := 0
-	for k, v := range all {
-		if i == 10 {
-			break
-		}
-		i++
-		fmt.Printf("%v: %v\n", k, v)
-	}
-	fmt.Println("rebuilt:")
-	current = first
-	count = 0
-	for i := 0; i < 100; i++ {
-		fmt.Printf("%v", current.value)
+	fmt.Println("unique: ", len(all))
 
-		c, ok := current.neighbors[count]
-		if !ok {
-			break
-		}
-		current = c
-		if current.visited == true {
-			for first.visited {
-				first.visited = false
-				first = first.neighbors[count]
-			}
+	count := 0
+	for _, n := range order {
+		if n.count == 1 {
 			count++
+		} else if count != 0 {
+			fmt.Println("run of ", count)
+			count = 0
 		}
-		current.visited = true
 	}
-	keys := []string{}
-	for k := range all {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	keyf, err := os.OpenFile("keys", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-	if err != nil {
-		panic(err)
-	}
-	defer keyf.Close()
-	valuesf, err := os.OpenFile("values", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
-	if err != nil {
-		panic(err)
-	}
-	defer valuesf.Close()
-	pkey := uint32(0)
-	for _, k := range keys {
-		num := binary.LittleEndian.Uint32([]byte(k))
-		buf := make([]byte, 10)
-		delta := uint64(num - pkey)
-		n := binary.PutUvarint(buf, delta)
-		_, err := keyf.Write(buf[:n])
-		if err != nil {
-			panic(err)
-		}
-		pnum := uint64(0)
-		nkeys := []uint64{}
-		// maps don't do smallet to biggest, so we need to sort
-		for pos := range all[k].neighbors {
-			nkeys = append(nkeys, pos)
-		}
-		slices.Sort(nkeys)
-		for _, pos := range nkeys {
-			delta := pos - pnum
 
-			n := binary.PutUvarint(buf, delta)
-			_, err := valuesf.Write(buf[:n])
-			if err != nil {
-				panic(err)
-			}
-			pnum = pos
-
+	slices.SortFunc(order, func(a, b *node) int {
+		if a.count == b.count {
+			return cmp.Compare(a.value, b.value)
 		}
-		_, err = valuesf.Write([]byte{0, 0})
-		if err != nil {
-			panic(err)
+		return cmp.Compare(a.count, b.count)
+	})
+	prev := order[0]
+	fmt.Println(prev.value, prev.count)
+	for _, n := range order {
+		if n.value != prev.value {
+			fmt.Println(n.value, n.count)
+			prev = n
 		}
-		pkey = num
 	}
 }
