@@ -107,10 +107,15 @@ func main() {
 		if node.ordered[0] == b {
 			count++
 		} else {
-			skips = append(skips, &skip{
-				count: count,
-				next:  b,
-			})
+			for k, v := range node.ordered {
+				if v == b {
+					skips = append(skips, &skip{
+						count: count,
+						next:  byte(k),
+					})
+					break
+				}
+			}
 			count = 0
 		}
 		if err != nil {
@@ -175,8 +180,9 @@ func main() {
 			fmt.Println("skipping ", skip.count, skip.next)
 		}
 		i++
-		binary.AppendUvarint(out, uint64(skip.count))
-		out = append(out, skip.next)
+		out = binary.AppendUvarint(out, uint64(skip.count))
+		out = binary.AppendUvarint(out, uint64(skip.next))
+
 	}
 	fmt.Println("skiplist size: ", len(out))
 	_, err = kf.Write(out)
