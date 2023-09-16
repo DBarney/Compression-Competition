@@ -23,6 +23,7 @@ type node struct {
 
 func main() {
 	f, err := os.Open(os.Args[1])
+	write := false
 	if err != nil {
 		panic(err)
 	}
@@ -92,6 +93,7 @@ func main() {
 	binary.BigEndian.PutUint32(buf, first)
 	count := uint32(0)
 	skips := []*skip{}
+	total := uint64(0)
 	for {
 		b, err := br.ReadByte()
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -108,6 +110,7 @@ func main() {
 		} else {
 			for k, v := range node.ordered {
 				if v == b {
+					total += uint64(count)
 					skips = append(skips, &skip{
 						count: count,
 						next:  byte(k),
@@ -121,14 +124,15 @@ func main() {
 			break
 		}
 	}
-	fmt.Println("")
+	fmt.Println("avg skip", total/uint64(len(skips)))
 
-	/*
-		kf, err := os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
+	var kf *os.File
+	if write {
+		kf, err = os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
 		if err != nil {
 			panic(err)
 		}
-	*/
+	}
 	ordered := []uint32{}
 	for k := range all {
 		ordered = append(ordered, k)
@@ -147,7 +151,7 @@ func main() {
 		}
 	}
 	fmt.Println("index size ", len(buf)/1024, "KB")
-	/*
+	if write {
 		_, err = kf.Write(buf)
 		if err != nil {
 			panic(err)
@@ -156,7 +160,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-	*/
+	}
 	buf = []byte{}
 	for _, skip := range skips {
 		buf = binary.AppendUvarint(buf, uint64(skip.count))
@@ -164,10 +168,10 @@ func main() {
 
 	}
 	fmt.Println("skiplist size: ", len(buf)/1024, "KB")
-	/*
-		_, err = kf.Write(out)
+	if write {
+		_, err = kf.Write(buf)
 		if err != nil {
 			panic(err)
 		}
-	*/
+	}
 }
