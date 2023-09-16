@@ -14,11 +14,15 @@ import (
 )
 
 func main() {
-	f, err := os.Open(os.Args[1])
+	fmt.Println("reading file into memory")
+	file, err := os.ReadFile(os.Args[1])
+	testCompression(file)
+	fileBuf := bytes.NewBuffer(file)
 	if err != nil {
 		panic(err)
 	}
-	br := bufio.NewReader(f)
+
+	br := bufio.NewReader(fileBuf)
 	all := []uint64{}
 	mapping := map[string][]string{}
 	length := 4
@@ -98,11 +102,8 @@ func main() {
 	}
 	fmt.Println("building skip list")
 
-	_, err = f.Seek(0, 0)
-	if err != nil {
-		panic(err)
-	}
-	br = bufio.NewReader(f)
+	fileBuf = bytes.NewBuffer(file)
+	br = bufio.NewReader(fileBuf)
 	prev = make([]byte, length)
 	path := []uint64{}
 	i = 0
@@ -117,6 +118,7 @@ func main() {
 		prev = current
 		pos, found := slices.BinarySearch(next, key)
 		if !found {
+			fmt.Println(len(key), len(path), current)
 			panic("unable to find data??")
 		}
 		path = append(path, uint64(pos))
