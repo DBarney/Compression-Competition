@@ -43,13 +43,26 @@ func main() {
 		}
 	}
 	fmt.Println("")
+
+	buf := []byte{}
+	for k, vs := range mapping {
+		buf = append(buf, []byte(k)...)
+		for _, v := range vs {
+
+			buf = append(buf, []byte(v)...)
+		}
+	}
+	fmt.Println("compressing sorted file")
+	testCompression(buf)
+
+	fmt.Println("custom compression")
 	slices.Sort(all)
 	l := len(all)
 	all = slices.Compact(all)
 	fmt.Println("duplicates removed:", l-len(all))
 	fmt.Println("min duplicate size:", (l-len(all))/1024/1024*8, "MB")
 	nprev := uint64(0)
-	buf := []byte{}
+	buf = []byte{}
 	delta := uint64(0)
 	for i := 0; i < len(all); i++ {
 		val := all[i]
@@ -82,11 +95,7 @@ func main() {
 		if v == 0 {
 			continue
 		}
-		for j := 0; j < v; j++ {
-			buf = binary.AppendUvarint(buf, uint64(i))
-		}
 	}
-	fmt.Println("min encoded size", len(buf)/1024, "KB")
 	fmt.Println("building skip list")
 
 	_, err = f.Seek(0, 0)
