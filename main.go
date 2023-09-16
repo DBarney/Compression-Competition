@@ -27,14 +27,14 @@ func main() {
 		panic(err)
 	}
 	br := bufio.NewReader(f)
-	all := map[uint64]*node{}
-	length := 8
+	all := map[uint32]*node{}
+	length := 4
 	slice := make([]byte, length)
 	_, err = io.ReadFull(br, slice)
 	if err != nil {
 		panic(err)
 	}
-	key := binary.BigEndian.Uint64(slice)
+	key := binary.BigEndian.Uint32(slice)
 	current := &node{
 		next: map[byte]uint32{},
 	}
@@ -48,7 +48,7 @@ func main() {
 		}
 		current.next[b]++
 		slice = append(slice[1:], b)
-		key := binary.BigEndian.Uint64(slice)
+		key := binary.BigEndian.Uint32(slice)
 		next, ok := all[key]
 		if !ok {
 			next = &node{
@@ -89,7 +89,7 @@ func main() {
 	}
 	br = bufio.NewReader(f)
 	buf := make([]byte, length)
-	binary.BigEndian.PutUint64(buf, first)
+	binary.BigEndian.PutUint32(buf, first)
 	count := uint32(0)
 	skips := []*skip{}
 	for {
@@ -97,7 +97,7 @@ func main() {
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
-		key := binary.BigEndian.Uint64(buf)
+		key := binary.BigEndian.Uint32(buf)
 		node := all[key]
 		if len(node.ordered) == 0 {
 			break
@@ -129,12 +129,12 @@ func main() {
 			panic(err)
 		}
 	*/
-	ordered := []uint64{}
+	ordered := []uint32{}
 	for k := range all {
 		ordered = append(ordered, k)
 	}
 	slices.Sort(ordered)
-	prev := uint64(0)
+	prev := uint32(0)
 	buf = []byte{}
 	for _, key := range ordered {
 		node := all[key]
