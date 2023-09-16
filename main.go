@@ -17,7 +17,6 @@ type skip struct {
 }
 
 type node struct {
-	value   uint32
 	next    map[byte]uint32
 	ordered []byte
 }
@@ -28,14 +27,14 @@ func main() {
 		panic(err)
 	}
 	br := bufio.NewReader(f)
-	all := map[uint32]*node{}
-	length := 4
+	all := map[uint64]*node{}
+	length := 8
 	slice := make([]byte, length)
 	_, err = io.ReadFull(br, slice)
 	if err != nil {
 		panic(err)
 	}
-	key := binary.BigEndian.Uint32(slice)
+	key := binary.BigEndian.Uint64(slice)
 	current := &node{
 		next: map[byte]uint32{},
 	}
@@ -49,7 +48,7 @@ func main() {
 		}
 		current.next[b]++
 		slice = append(slice[1:], b)
-		key := binary.BigEndian.Uint32(slice)
+		key := binary.BigEndian.Uint64(slice)
 		next, ok := all[key]
 		if !ok {
 			next = &node{
@@ -58,7 +57,7 @@ func main() {
 			all[key] = next
 		}
 		current = next
-		if i%1000 == 0 {
+		if i%100000 == 0 {
 			fmt.Printf("\rkeys %v processed:%v", len(all), i)
 		}
 		i++
@@ -84,13 +83,13 @@ func main() {
 		node.ordered = ord
 	}
 	fmt.Println("building diff")
-	_, err = f.Seek(4, 0)
+	_, err = f.Seek(int64(length), 0)
 	if err != nil {
 		panic(err)
 	}
 	br = bufio.NewReader(f)
-	buf := []byte{0, 0, 0, 0}
-	binary.BigEndian.PutUint32(buf, first)
+	buf := make([]byte, length)
+	binary.BigEndian.PutUint64(buf, first)
 	count := uint32(0)
 	skips := []*skip{}
 	for {
@@ -98,7 +97,7 @@ func main() {
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
-		key := binary.BigEndian.Uint32(buf)
+		key := binary.BigEndian.Uint64(buf)
 		node := all[key]
 		if len(node.ordered) == 0 {
 			break
@@ -124,69 +123,51 @@ func main() {
 	}
 	fmt.Println("")
 
-	fmt.Println("summary:")
-	fmt.Println("key size: ", len(all)*length)
-	fmt.Println("unique: ", len(all))
 	/*
-		fmt.Println("example:")
-
-		buf = []byte{0, 0, 0, 0}
-		binary.BigEndian.PutUint32(buf, first)
-		fmt.Printf("%v", string(buf))
-		for i = 0; i < 100; i++ {
-			key := binary.BigEndian.Uint32(buf)
-			node := all[key]
-			b := node.ordered[0]
-			buf = append(buf[1:], b)
-			fmt.Printf("%v", string([]byte{b}))
+		kf, err := os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
+		if err != nil {
+			panic(err)
 		}
 	*/
-	kf, err := os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
-	if err != nil {
-		panic(err)
-	}
-	ordered := []uint32{}
+	ordered := []uint64{}
 	for k := range all {
 		ordered = append(ordered, k)
 	}
 	slices.Sort(ordered)
-	prev := uint32(0)
+	prev := uint64(0)
+	buf = []byte{}
 	for _, key := range ordered {
 		node := all[key]
-		buf := []byte{0, 0, 0, 0, 0, 0, 0, 0}
-		out := []byte{}
-		n := binary.PutUvarint(buf, uint64(key-prev))
-		out = append(out, buf[:n]...)
-		n = binary.PutUvarint(buf, uint64(len(node.next)))
-		out = append(out, buf[:n]...)
+		buf = binary.AppendUvarint(buf, uint64(key-prev))
+		buf = binary.AppendUvarint(buf, uint64(len(node.next)))
 		prev = key
-		for c := range node.next {
-			out = append(out, c)
-			// no uvarint as it makes it bigger
+
+		for _, o := range node.ordered {
+			buf = append(buf, o)
 		}
+	}
+	fmt.Println("index size ", len(buf)/1024, "KB")
+	/*
 		_, err = kf.Write(buf)
 		if err != nil {
 			panic(err)
 		}
-	}
-	_, err = kf.Write([]byte{0, 0, 0, 0})
-	if err != nil {
-		panic(err)
-	}
-	out := []byte{}
-	i = 0
-	for _, skip := range skips {
-		if i < 10 {
-			fmt.Println("skipping ", skip.count, skip.next)
+		_, err = kf.Write([]byte{0, 0, 0, 0})
+		if err != nil {
+			panic(err)
 		}
-		i++
-		out = binary.AppendUvarint(out, uint64(skip.count))
-		out = binary.AppendUvarint(out, uint64(skip.next))
+	*/
+	buf = []byte{}
+	for _, skip := range skips {
+		buf = binary.AppendUvarint(buf, uint64(skip.count))
+		buf = binary.AppendUvarint(buf, uint64(skip.next))
 
 	}
-	fmt.Println("skiplist size: ", len(out))
-	_, err = kf.Write(out)
-	if err != nil {
-		panic(err)
-	}
+	fmt.Println("skiplist size: ", len(buf)/1024, "KB")
+	/*
+		_, err = kf.Write(out)
+		if err != nil {
+			panic(err)
+		}
+	*/
 }
