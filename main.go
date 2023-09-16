@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
-	"cmp"
+	"bytes"
+	"compress/gzip"
+	"compress/lzw"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -11,53 +13,27 @@ import (
 	"slices"
 )
 
-type skip struct {
-	count uint32
-	next  byte
-}
-
-type node struct {
-	next    map[byte]uint32
-	ordered []byte
-}
-
 func main() {
 	f, err := os.Open(os.Args[1])
-	write := false
 	if err != nil {
 		panic(err)
 	}
 	br := bufio.NewReader(f)
-	all := map[uint32]*node{}
+	all := []uint64{}
+	mapping := map[string][]string{}
 	length := 4
-	slice := make([]byte, length)
-	_, err = io.ReadFull(br, slice)
-	if err != nil {
-		panic(err)
-	}
-	key := binary.BigEndian.Uint32(slice)
-	current := &node{
-		next: map[byte]uint32{},
-	}
-	all[key] = current
-	first := key
+	prev := make([]byte, length)
 	i := 0
 	for {
-		b, err := br.ReadByte()
+		current := make([]byte, length)
+		_, err := io.ReadFull(br, current)
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
-		current.next[b]++
-		slice = append(slice[1:], b)
-		key := binary.BigEndian.Uint32(slice)
-		next, ok := all[key]
-		if !ok {
-			next = &node{
-				next: map[byte]uint32{},
-			}
-			all[key] = next
-		}
-		current = next
+		key := binary.BigEndian.Uint64(append(prev, current...))
+		mapping[string(prev)] = append(mapping[string(prev)], string(current))
+		all = append(all, key)
+		prev = current
 		if i%100000 == 0 {
 			fmt.Printf("\rkeys %v processed:%v", len(all), i)
 		}
@@ -66,112 +42,118 @@ func main() {
 			break
 		}
 	}
-
 	fmt.Println("")
-	fmt.Println("ordering bytes")
-	for _, node := range all {
-		ord := []byte{}
-		for k := range node.next {
-			ord = append(ord, k)
-		}
-		// swap args, we want decending order
-		slices.SortFunc(ord, func(a, b byte) int {
-			if node.next[b] == node.next[a] {
-				return cmp.Compare(b, a)
-			}
-			return cmp.Compare(node.next[b], node.next[a])
-		})
-		node.ordered = ord
+	slices.Sort(all)
+	l := len(all)
+	all = slices.Compact(all)
+	fmt.Println("duplicates removed:", l-len(all))
+	fmt.Println("min duplicate size:", (l-len(all))/1024/1024*8, "MB")
+	nprev := uint64(0)
+	buf := []byte{}
+	delta := uint64(0)
+	for i := 0; i < len(all); i++ {
+		val := all[i]
+		ddelta := (val - nprev) - delta
+		delta = val - nprev
+		buf = binary.AppendUvarint(buf, ddelta)
 	}
-	fmt.Println("building diff")
-	_, err = f.Seek(int64(length), 0)
+	testCompression(buf)
+	fmt.Println("removing duplicate mapping entries")
+	for k, v := range mapping {
+		slices.Sort(v)
+		slices.Compact(v)
+		mapping[k] = v
+	}
+
+	dist := map[int]int{}
+	max := 0
+	for _, v := range mapping {
+		c := len(v)
+		dist[c]++
+		if max < c {
+			max = c
+		}
+	}
+
+	fmt.Println("distribution")
+	buf = []byte{}
+	for i := 0; i <= max; i++ {
+		v := dist[i]
+		if v == 0 {
+			continue
+		}
+		for j := 0; j < v; j++ {
+			buf = binary.AppendUvarint(buf, uint64(i))
+		}
+	}
+	fmt.Println("min encoded size", len(buf)/1024, "KB")
+	fmt.Println("building skip list")
+
+	_, err = f.Seek(0, 0)
 	if err != nil {
 		panic(err)
 	}
 	br = bufio.NewReader(f)
-	buf := make([]byte, length)
-	binary.BigEndian.PutUint32(buf, first)
-	count := uint32(0)
-	skips := []*skip{}
-	total := uint64(0)
+	prev = make([]byte, length)
+	path := []uint64{}
+	i = 0
 	for {
-		b, err := br.ReadByte()
+		current := make([]byte, length)
+		_, err := io.ReadFull(br, current)
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
 		}
-		key := binary.BigEndian.Uint32(buf)
-		node := all[key]
-		if len(node.ordered) == 0 {
-			break
+		key := string(current)
+		next := mapping[string(prev)]
+		prev = current
+		pos, found := slices.BinarySearch(next, key)
+		if !found {
+			panic("unable to find data??")
 		}
-		buf = append(buf[1:], b)
-		if node.ordered[0] == b {
-			count++
-		} else {
-			for k, v := range node.ordered {
-				if v == b {
-					total += uint64(count)
-					skips = append(skips, &skip{
-						count: count,
-						next:  byte(k),
-					})
-					break
-				}
-			}
-			count = 0
+		path = append(path, uint64(pos))
+		// now we need to find the index
+
+		if i%100000 == 0 {
+			fmt.Printf("\rprocessed:%v", i)
 		}
-		if err != nil {
+		i++
+		if err == io.EOF {
 			break
 		}
 	}
-	fmt.Println("avg skip", total/uint64(len(skips)))
+	fmt.Println("")
 
-	var kf *os.File
-	if write {
-		kf, err = os.OpenFile(os.Args[1]+".shrink", os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0755)
-		if err != nil {
-			panic(err)
-		}
-	}
-	ordered := []uint32{}
-	for k := range all {
-		ordered = append(ordered, k)
-	}
-	slices.Sort(ordered)
-	prev := uint32(0)
 	buf = []byte{}
-	for _, key := range ordered {
-		node := all[key]
-		buf = binary.AppendUvarint(buf, uint64(key-prev))
-		buf = binary.AppendUvarint(buf, uint64(len(node.next)))
-		prev = key
+	freq := map[uint64]uint64{}
+	// I tried compressing runs of numbers 0,0,0,0 into 0,4 but it made the index bigger
+	for _, v := range path {
+		freq[v]++
+		buf = binary.AppendUvarint(buf, v)
+	}
 
-		for _, o := range node.ordered {
-			buf = append(buf, o)
-		}
+	for i := 0; i < 10; i++ {
+		fmt.Printf("depth: %v = %v => %.2f%%\n", i, freq[uint64(i)], float64(freq[uint64(i)])/float64(len(path))*100)
 	}
-	fmt.Println("index size ", len(buf)/1024, "KB")
-	if write {
-		_, err = kf.Write(buf)
-		if err != nil {
-			panic(err)
-		}
-		_, err = kf.Write([]byte{0, 0, 0, 0})
-		if err != nil {
-			panic(err)
-		}
-	}
-	buf = []byte{}
-	for _, skip := range skips {
-		buf = binary.AppendUvarint(buf, uint64(skip.count))
-		buf = binary.AppendUvarint(buf, uint64(skip.next))
+	fmt.Println("")
+	fmt.Println("index element count", len(path))
+	testCompression(buf)
+}
+func testCompression(buf []byte) {
+	fmt.Printf("normal size: %v KB\n", len(buf)/1024)
 
+	res := &bytes.Buffer{}
+	gw, err := gzip.NewWriterLevel(res, gzip.BestCompression)
+	if err != nil {
+		panic(err)
 	}
-	fmt.Println("skiplist size: ", len(buf)/1024, "KB")
-	if write {
-		_, err = kf.Write(buf)
-		if err != nil {
-			panic(err)
-		}
+	compress := map[string]io.WriteCloser{
+		"lzw":  lzw.NewWriter(res, lzw.MSB, 8),
+		"gzip": gw,
+	}
+	for name, w := range compress {
+		res.Reset()
+		w.Write(buf)
+		w.Close()
+		fmt.Printf("%v size: %v KB\n", name, res.Len()/1024)
 	}
 }
