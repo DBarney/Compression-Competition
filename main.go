@@ -28,11 +28,15 @@ func main() {
 	length := 4
 	prev := make([]byte, length)
 	i := 0
+	chars := map[byte]int{}
 	for {
 		current := make([]byte, length)
 		_, err := io.ReadFull(br, current)
 		if err != nil && !errors.Is(err, io.EOF) {
 			panic(err)
+		}
+		for _, c := range current {
+			chars[c]++
 		}
 		key := binary.BigEndian.Uint64(append(prev, current...))
 		mapping[string(prev)] = append(mapping[string(prev)], string(current))
@@ -48,6 +52,38 @@ func main() {
 	}
 	fmt.Println("")
 
+	c := byte(0)
+	count := 0
+	for k, v := range chars {
+		if v > count {
+			count = v
+			c = k
+		}
+	}
+	fmt.Printf("most common character: %v '%v'\n", c, string([]byte{c}))
+
+	fmt.Println("building tokens")
+	fileBuf = bytes.NewBuffer(file)
+	br = bufio.NewReader(fileBuf)
+	ptoken := []byte{}
+	allTokens := []string{}
+	for {
+		token, err := br.ReadBytes(c)
+		if err != nil && !errors.Is(err, io.EOF) {
+			panic(err)
+		}
+		allTokens = append(allTokens, string(append(ptoken, token...)))
+		ptoken = token
+		if err == io.EOF {
+			break
+		}
+	}
+
+	fmt.Println(len(allTokens))
+	slices.Sort(allTokens)
+	allTokens = slices.Compact(allTokens)
+	fmt.Println(len(allTokens))
+
 	buf := []byte{}
 	for k, vs := range mapping {
 		buf = append(buf, []byte(k)...)
@@ -61,10 +97,7 @@ func main() {
 
 	fmt.Println("custom compression")
 	slices.Sort(all)
-	l := len(all)
 	all = slices.Compact(all)
-	fmt.Println("duplicates removed:", l-len(all))
-	fmt.Println("min duplicate size:", (l-len(all))/1024/1024*8, "MB")
 	nprev := uint64(0)
 	buf = []byte{}
 	delta := uint64(0)
@@ -92,7 +125,6 @@ func main() {
 		}
 	}
 
-	fmt.Println("distribution")
 	buf = []byte{}
 	for i := 0; i <= max; i++ {
 		v := dist[i]
@@ -135,18 +167,11 @@ func main() {
 	fmt.Println("")
 
 	buf = []byte{}
-	freq := map[uint64]uint64{}
 	// I tried compressing runs of numbers 0,0,0,0 into 0,4 but it made the index bigger
 	for _, v := range path {
-		freq[v]++
 		buf = binary.AppendUvarint(buf, v)
 	}
 
-	for i := 0; i < 10; i++ {
-		fmt.Printf("depth: %v = %v => %.2f%%\n", i, freq[uint64(i)], float64(freq[uint64(i)])/float64(len(path))*100)
-	}
-	fmt.Println("")
-	fmt.Println("index element count", len(path))
 	testCompression(buf)
 }
 func testCompression(buf []byte) {
@@ -167,4 +192,5 @@ func testCompression(buf []byte) {
 		w.Close()
 		fmt.Printf("%v size: %v KB\n", name, res.Len()/1024)
 	}
+	fmt.Println("")
 }
