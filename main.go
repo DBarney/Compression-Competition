@@ -5,13 +5,88 @@ import (
 	"cmp"
 	"compress/gzip"
 	"compress/lzw"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"slices"
 )
+
+type rule struct {
+	Expected string
+	Location int
+	Produce  string
+}
+
+type entry struct {
+	nextTokens map[string]map[int][]string
+}
+
+type prediction struct {
+	rules map[int][]*rule
+}
+
+func (p *prediction) addToken(prev []string, produce string) bool {
+	loc := len(prev) - 1
+	i := 0
+	for {
+		check := prev[loc-i]
+		rules, found := p.rules[i] // check for rules that match at current depth
+		fmt.Printf("checking at depth %v, found %v rules\n", i, len(rules))
+		if !found {
+			// we can add our rule in
+			p.rules[i] = append(p.rules[i], &rule{
+				Location: loc,
+				Expected: check,
+				Produce:  produce,
+			})
+			return true
+		}
+		foundPartial := false
+		for ruleidx, r := range rules {
+			fmt.Printf("'%v'=>'%v' where\n\trule identifier='%v' and back %v locations.\n\tand we are looking for '%v'\n", r.Expected, produce, prev[r.Location-i], i, check)
+			if prev[r.Location-i] == r.Expected && r.Produce == produce {
+				fmt.Println("we already have a match")
+				return false // we already have a match
+			}
+			// need to see if we partially match another rule
+			partialMatch := true
+			for j := 0; j <= i; j++ {
+				fmt.Printf("checking %v %v\n", prev[r.Location-j], prev[loc-j])
+				if prev[r.Location-j] != prev[loc-j] {
+					partialMatch = false
+				}
+			}
+			if partialMatch {
+				// bump the found rule further back
+				if r.Location-i-1 < 0 {
+					fmt.Println("can't look back further")
+					foundPartial = true
+					break
+				}
+
+				// how to do this correctly....
+				// mutating an array AND map I am iterating
+				p.rules[i] = append(rules[:ruleidx], rules[ruleidx+1:]...)
+				r.Expected = prev[r.Location-i-1]
+				p.rules[i+1] = append(p.rules[i+1], r)
+				fmt.Println("shifting existing rule")
+				foundPartial = true
+			}
+		}
+		if !foundPartial && len(rules) != 0 {
+			fmt.Println("we do not have a partial match")
+			p.rules[i] = append(p.rules[i], &rule{
+				Location: loc,
+				Expected: check,
+				Produce:  produce,
+			})
+			return true
+		}
+		i++
+	}
+	panic("should never run")
+}
 
 func main() {
 	fmt.Println("reading file into memory")
@@ -22,15 +97,65 @@ func main() {
 	//testCompression(file)
 
 	fmt.Println("searching for words")
-	re := regexp.MustCompile(`([\w]+|[^\w]+)[ ,-.;']+?`)
+	re := regexp.MustCompile(`[\w]+`)
 	words := re.FindAll(file, -1)
 	fmt.Println("counting duplicates")
 	counts := map[string]int{}
 	swords := []string{}
-	for _, v := range words {
-		counts[string(v)]++
-		swords = append(swords, string(v))
+	prev := ""
+	entries := map[string]*entry{
+		"": &entry{
+			nextTokens: map[string]map[int][]string{},
+		},
 	}
+	for i, v := range words {
+		if i == 30 {
+			//return
+		}
+		token := string(v)
+		ent, found := entries[prev]
+		if !found {
+			ent = &entry{
+				nextTokens: map[string]map[int][]string{},
+			}
+			entries[prev] = ent
+		}
+		locations, found := ent.nextTokens[token]
+		if len(ent.nextTokens) > 0 && !found {
+			panic("need to adjust")
+		} else if found {
+			fmt.Println("checking token prediciton", prev, token)
+			// we need to see if we already have a match
+
+			match := false
+			for location, ts := range locations {
+				fmt.Println(swords[location-len(ts)], swords[i-len(ts)])
+				if swords[location-len(ts)] == swords[i-len(ts)] {
+					match = true
+				}
+			}
+
+			if match {
+				fmt.Println("token already encoded")
+			} else {
+				panic("token needs to be adjusted")
+			}
+		} else {
+			locations = map[int][]string{
+				i: []string{prev},
+			}
+
+			ent.nextTokens[token] = locations
+		}
+
+		fmt.Printf("processing words '%v' %v/%v \n", token, i, len(words))
+		//counts[token]++
+		swords = append(swords, token)
+		prev = token
+	}
+	fmt.Println("")
+
+	return
 	fmt.Println("sorting")
 	slices.Sort(swords)
 	fmt.Println("removing duplicates")
@@ -44,8 +169,10 @@ func main() {
 		}
 		return cmp.Compare(counts[b], counts[a]) //reversed
 	})
-	for i := 0; i < 20; i++ {
-		fmt.Printf("sorted sample: %v %v %v\n", swords[i], counts[swords[i]], []byte(swords[i]))
+	if false {
+		for i := 0; i < 30; i++ {
+			fmt.Printf("sorted sample: %v %v %v\n", swords[i], counts[swords[i]], []byte(swords[i]))
+		}
 	}
 	posMap := map[string]int{}
 	for i, w := range swords {
@@ -57,25 +184,6 @@ func main() {
 		fmt.Printf("word list size %v KB\r", size/1024)
 	}
 	fmt.Println("")
-	longest := 0
-	for _, w := range words {
-		l := len(w)
-		if l > longest {
-			longest = l
-			fmt.Printf("longest word %v\r", longest)
-		}
-	}
-	fmt.Println("")
-	buf := []byte{}
-	for _, word := range words {
-		pos, found := posMap[string(word)]
-		if !found {
-			panic("word was not found")
-		}
-		buf = binary.AppendUvarint(buf, uint64(pos))
-	}
-	fmt.Println("document list length ", len(buf)/1024, "KB")
-
 }
 
 func testCompression(buf []byte) {
