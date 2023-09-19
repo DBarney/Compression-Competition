@@ -11,7 +11,7 @@ func TestAddRule(t *testing.T) {
 	tests := []struct {
 		tokens  []string
 		results []bool
-		rules   map[int][]*rule
+		rules   map[int]map[string]*rule
 	}{
 		{
 			tokens:  []string{"", "a", "b"},
@@ -28,19 +28,17 @@ func TestAddRule(t *testing.T) {
 		{
 			tokens:  []string{"", "c", "a", "b", "c", "a", "d"},
 			results: []bool{true, true},
-			rules: map[int][]*rule{
-				0: []*rule{},
-				1: []*rule{},
-				2: []*rule{
-					&rule{
-						Location: 2,
-						Expected: "",
-						Produce:  "b",
+			rules: map[int]map[string]*rule{
+				0: map[string]*rule{},
+				1: map[string]*rule{},
+				2: map[string]*rule{
+					"": &rule{
+						Locations: []int{2},
+						Produce:   "b",
 					},
-					&rule{
-						Location: 5,
-						Expected: "b",
-						Produce:  "d",
+					"b": &rule{
+						Locations: []int{5},
+						Produce:   "d",
 					},
 				},
 			},
@@ -48,58 +46,74 @@ func TestAddRule(t *testing.T) {
 		{
 			tokens:  []string{"", "c", "a", "b", "c", "a", "d", "b", "c", "a", "f"},
 			results: []bool{true, true, true},
-			rules: map[int][]*rule{
-				0: []*rule{},
-				1: []*rule{},
-				2: []*rule{
-					&rule{
-						Location: 2,
-						Expected: "",
-						Produce:  "b",
+			rules: map[int]map[string]*rule{
+				0: map[string]*rule{},
+				1: map[string]*rule{},
+				2: map[string]*rule{
+					"": &rule{
+						Locations: []int{2},
+						Produce:   "b",
 					},
 				},
-				3: []*rule{
-					&rule{
-						Location: 5,
-						Expected: "a",
-						Produce:  "d",
+				3: map[string]*rule{
+					"a": &rule{
+						Locations: []int{5},
+						Produce:   "d",
 					},
-					&rule{
-						Location: 9,
-						Expected: "d",
-						Produce:  "f",
+					"d": &rule{
+						Locations: []int{9},
+						Produce:   "f",
 					},
 				},
 			},
 		},
 		{
 			tokens: []string{"", "c", "a", "b", "c", "a", "d", "b", "c", "a", "f", "a", "g"},
-			rules: map[int][]*rule{
-				0: []*rule{
-					&rule{
-						Location: 11,
-						Expected: "f",
-						Produce:  "g",
+			rules: map[int]map[string]*rule{
+				0: map[string]*rule{},
+				1: map[string]*rule{
+					"f": &rule{
+						Locations: []int{11},
+						Produce:   "g",
 					},
 				},
-				1: []*rule{},
-				2: []*rule{
-					&rule{
-						Location: 2,
-						Expected: "",
-						Produce:  "b",
+				2: map[string]*rule{
+					"": &rule{
+						Locations: []int{2},
+						Produce:   "b",
 					},
 				},
-				3: []*rule{
-					&rule{
-						Location: 5,
-						Expected: "a",
-						Produce:  "d",
+				3: map[string]*rule{
+					"a": &rule{
+						Locations: []int{5},
+						Produce:   "d",
 					},
-					&rule{
-						Location: 9,
-						Expected: "d",
-						Produce:  "f",
+					"d": &rule{
+						Locations: []int{9},
+						Produce:   "f",
+					},
+				},
+			},
+		},
+		//TODO: duplicate rules that need to be separated out and made deeper
+		{
+			tokens:  []string{"", "c", "a", "b", "c", "a", "b", "x", "c", "a", "c"},
+			results: []bool{true, false, true},
+			rules: map[int]map[string]*rule{
+				0: map[string]*rule{},
+				1: map[string]*rule{},
+				2: map[string]*rule{
+					"": &rule{
+						Locations: []int{2},
+						Produce:   "b",
+					},
+					"b": &rule{
+						Locations: []int{5},
+						Produce:   "b",
+					},
+					"x": &rule{
+						Locations: []int{9},
+						Produce:   "c",
 					},
 				},
 			},
@@ -108,7 +122,7 @@ func TestAddRule(t *testing.T) {
 	for i, test := range tests {
 		t.Run(fmt.Sprintf("case: %v", i), func(t *testing.T) {
 			p := &prediction{
-				rules: map[int][]*rule{},
+				rules: map[int]map[string]*rule{},
 			}
 			t.Logf("ts: %v", test.tokens)
 			found := 0

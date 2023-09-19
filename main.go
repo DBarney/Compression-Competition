@@ -5,17 +5,22 @@ import (
 	"cmp"
 	"compress/gzip"
 	"compress/lzw"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"slices"
+	"time"
 )
 
 type rule struct {
-	Expected string
-	Location int
-	Produce  string
+	Locations []int
+	Produce   string
+}
+
+func (r rule) String() string {
+	return fmt.Sprintf("l=%v p=%v", r.Locations, r.Produce)
 }
 
 type entry struct {
@@ -23,69 +28,156 @@ type entry struct {
 }
 
 type prediction struct {
-	rules map[int][]*rule
+	rules map[int]map[string]*rule
+}
+
+func (p *prediction) match(prev []string) (map[int]map[string]*rule, bool) {
+	found := map[int]map[string]*rule{}
+	loc := len(prev) - 1
+	for d, rules := range p.rules {
+		for expected, aRule := range rules {
+			if prev[loc-d] == expected {
+				frules, ok := found[d]
+				if !ok {
+					frules = map[string]*rule{}
+					found[d] = frules
+				}
+				frules[expected] = aRule
+			} else {
+				// check for partial matches
+			}
+		}
+	}
+	return found, len(found) != 0
+}
+
+func (p *prediction) subMatch(prev []string) int {
+	max := -1
+	loc := len(prev) - 1
+	for d, rules := range p.rules {
+		for _, aRule := range rules {
+			for i := 0; i <= d; i++ {
+				//fmt.Println("subMatch", prev[loc-i], prev[aRule.Location-i])
+				for _, location := range aRule.Locations {
+					if prev[loc-i] == prev[location-i] {
+						if max < i {
+							max = i
+						}
+					}
+				}
+			}
+		}
+	}
+	return max + 1
 }
 
 func (p *prediction) addToken(prev []string, produce string) bool {
 	loc := len(prev) - 1
-	i := 0
-	for {
-		check := prev[loc-i]
-		rules, found := p.rules[i] // check for rules that match at current depth
-		fmt.Printf("checking at depth %v, found %v rules\n", i, len(rules))
-		if !found {
-			// we can add our rule in
-			p.rules[i] = append(p.rules[i], &rule{
-				Location: loc,
-				Expected: check,
-				Produce:  produce,
-			})
-			return true
+	matchRules, didMatch := p.match(prev)
+	//fmt.Println("checking for matching rules", matchRules, didMatch, prev)
+	if !didMatch {
+		minDepth := p.subMatch(prev)
+		//fmt.Printf("no rules match, longest submatch is %v for %v %v\n", minDepth, prev, produce)
+		rules, ok := p.rules[minDepth]
+		if !ok {
+			rules = map[string]*rule{}
+			p.rules[minDepth] = rules
 		}
-		foundPartial := false
-		for ruleidx, r := range rules {
-			fmt.Printf("'%v'=>'%v' where\n\trule identifier='%v' and back %v locations.\n\tand we are looking for '%v'\n", r.Expected, produce, prev[r.Location-i], i, check)
-			if prev[r.Location-i] == r.Expected && r.Produce == produce {
-				fmt.Println("we already have a match")
-				return false // we already have a match
-			}
-			// need to see if we partially match another rule
-			partialMatch := true
-			for j := 0; j <= i; j++ {
-				fmt.Printf("checking %v %v\n", prev[r.Location-j], prev[loc-j])
-				if prev[r.Location-j] != prev[loc-j] {
-					partialMatch = false
-				}
-			}
-			if partialMatch {
-				// bump the found rule further back
-				if r.Location-i-1 < 0 {
-					fmt.Println("can't look back further")
-					foundPartial = true
-					break
-				}
-
-				// how to do this correctly....
-				// mutating an array AND map I am iterating
-				p.rules[i] = append(rules[:ruleidx], rules[ruleidx+1:]...)
-				r.Expected = prev[r.Location-i-1]
-				p.rules[i+1] = append(p.rules[i+1], r)
-				fmt.Println("shifting existing rule")
-				foundPartial = true
-			}
+		if rules[prev[loc-minDepth]] != nil {
+			//fmt.Println(rules[prev[loc-minDepth]], prev[loc-minDepth], loc-minDepth)
+			panic("we can't overwrite a rule")
 		}
-		if !foundPartial && len(rules) != 0 {
-			fmt.Println("we do not have a partial match")
-			p.rules[i] = append(p.rules[i], &rule{
-				Location: loc,
-				Expected: check,
-				Produce:  produce,
-			})
-			return true
+		rules[prev[loc-minDepth]] = &rule{
+			Locations: []int{loc},
+			Produce:   produce,
 		}
-		i++
+		return true
 	}
-	panic("should never run")
+	// look for exact match
+	for _, rules := range matchRules {
+		for _, rule := range rules {
+			if rule.Produce == produce {
+				rule.Locations = append(rule.Locations, loc)
+				//fmt.Println("! rule already exists")
+				return false
+			}
+		}
+	}
+
+	// we have matches, but nothing producing our token
+	// we need to adjust the matching rules backwards, then check again
+
+	for d, rules := range matchRules {
+		for expect, aRule := range rules {
+			//fmt.Println("match ", d, expect, aRule)
+			delete(p.rules[d], expect)
+			newDepth := d + 1
+			newRules, ok := p.rules[newDepth]
+			if !ok {
+				newRules = map[string]*rule{}
+				p.rules[newDepth] = newRules
+			}
+			reinsert := map[int][]*rule{
+				newDepth: []*rule{
+					aRule,
+				},
+			}
+			for len(reinsert) != 0 {
+				next := map[int][]*rule{}
+				for newDepth, rules := range reinsert {
+					for _, aRule := range rules {
+						for _, location := range aRule.Locations {
+							newExpect := prev[location-newDepth]
+							otherRule, ok := newRules[newExpect]
+							if !ok {
+								//fmt.Println("created new rule", location)
+								newRules[newExpect] = &rule{
+									Locations: []int{location},
+									Produce:   aRule.Produce,
+								}
+								continue
+							}
+							if otherRule.Produce != aRule.Produce {
+								continue
+								delete(newRules, newExpect)
+								fmt.Println("adjusting rules", otherRule.Produce, aRule.Produce)
+								for _, location := range otherRule.Locations {
+									next[newDepth+1] = append(next[newDepth+1], &rule{
+										Locations: []int{location},
+										Produce:   prev[location-newDepth-1],
+									})
+								}
+								aRule.Produce = prev[location-newDepth-1]
+								next[newDepth+1] = append(next[newDepth+1], otherRule, aRule)
+								continue
+							}
+							//fmt.Println("joined with another rule", location)
+							otherRule.Locations = append(otherRule.Locations, location)
+							//fmt.Println("update", newDepth, newExpect, aRule)
+						}
+					}
+				}
+				reinsert = next
+			}
+		}
+	}
+	// wow! recursion!
+	return p.addToken(prev, produce)
+}
+
+func (p *prediction) predict(prev []string) string {
+	matchRules, found := p.match(prev)
+	if !found {
+		fmt.Println(prev, p.rules)
+		panic("unable to predict next token")
+	}
+	// double check that we only have one?
+	for _, rules := range matchRules {
+		for _, aRule := range rules {
+			return aRule.Produce
+		}
+	}
+	panic("we should have had a rule match somewhere...")
 }
 
 func main() {
@@ -97,63 +189,95 @@ func main() {
 	//testCompression(file)
 
 	fmt.Println("searching for words")
-	re := regexp.MustCompile(`[\w]+`)
+	re := regexp.MustCompile(`([\w]+|[^\w]+)[ ,.-]?`)
 	words := re.FindAll(file, -1)
-	fmt.Println("counting duplicates")
+	fmt.Println("processing words")
 	counts := map[string]int{}
-	swords := []string{}
+	swords := []string{""}
 	prev := ""
-	entries := map[string]*entry{
-		"": &entry{
-			nextTokens: map[string]map[int][]string{},
-		},
-	}
+	length := 51
+	entries := map[string]*prediction{}
+	needUpdate := time.NewTicker(time.Second / 10)
 	for i, v := range words {
-		if i == 30 {
-			//return
+		if i == length {
+			//break
 		}
 		token := string(v)
-		ent, found := entries[prev]
+		p, found := entries[prev]
 		if !found {
-			ent = &entry{
-				nextTokens: map[string]map[int][]string{},
+			p = &prediction{
+				rules: map[int]map[string]*rule{},
 			}
-			entries[prev] = ent
+			entries[prev] = p
 		}
-		locations, found := ent.nextTokens[token]
-		if len(ent.nextTokens) > 0 && !found {
-			panic("need to adjust")
-		} else if found {
-			fmt.Println("checking token prediciton", prev, token)
-			// we need to see if we already have a match
-
-			match := false
-			for location, ts := range locations {
-				fmt.Println(swords[location-len(ts)], swords[i-len(ts)])
-				if swords[location-len(ts)] == swords[i-len(ts)] {
-					match = true
-				}
-			}
-
-			if match {
-				fmt.Println("token already encoded")
-			} else {
-				panic("token needs to be adjusted")
-			}
-		} else {
-			locations = map[int][]string{
-				i: []string{prev},
-			}
-
-			ent.nextTokens[token] = locations
+		select {
+		case <-needUpdate.C:
+			fmt.Fprintf(os.Stderr, "%05.2f disovering rules for '%v'      \r", float32(i)/float32(len(words))*100, token)
+		default:
 		}
-
-		fmt.Printf("processing words '%v' %v/%v \n", token, i, len(words))
-		//counts[token]++
-		swords = append(swords, token)
+		counts[token]++
+		p.addToken(swords, token)
 		prev = token
+		swords = append(swords, token)
 	}
+
 	fmt.Println("")
+	fmt.Println("all rules")
+	count := 0
+	unique := []string{}
+	for k := range entries {
+		unique = append(unique, k)
+	}
+	slices.Sort(unique)
+	mapped := map[string]int{}
+	for i, s := range unique {
+		mapped[s] = i
+	}
+	buff := []byte{}
+	dbuff := map[int][]byte{}
+	maxd := 0
+	for k, prediction := range entries {
+		buff = binary.AppendUvarint(buff, uint64(mapped[k]))
+		for d, rules := range prediction.rules {
+			if d > maxd {
+				maxd = d
+			}
+			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(d))
+			for _, aRule := range rules {
+				count++
+				if len(aRule.Locations) == 1 {
+					//continue
+				}
+				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
+				//fmt.Printf("discovered rule '%v' '%v' '%v' '%v' %v\n", k, d, t, aRule.Produce, aRule.Locations)
+			}
+		}
+	}
+	fmt.Println("number of tokens", len(swords))
+	fmt.Println("number of unique tokens", len(entries))
+	fmt.Printf("found %v rules\n", count)
+	fmt.Printf("%v rules / enique token\n", count/len(entries))
+	fmt.Printf("keys maybe %v KB\n", len(buff)/1024)
+	total := len(buff)
+	for i := 0; i <= maxd; i++ {
+		b := dbuff[i]
+		fmt.Printf("depth %v maybe %v Bytes\n", i, len(b))
+		total += len(b)
+	}
+	fmt.Printf("maybe %v KB total\n", total/1024)
+
+	fmt.Println("regenerated text")
+	// lets try and regenerate it!
+	regenerated := []string{""}
+	for i := 0; i < length; i++ {
+		prediction := entries[regenerated[i]]
+		next := prediction.predict(regenerated)
+		if swords[i+1] != next {
+			fmt.Println("#", swords[i], next)
+		}
+		regenerated = append(regenerated, next)
+	}
+	fmt.Println(regenerated)
 
 	return
 	fmt.Println("sorting")
