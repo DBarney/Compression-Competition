@@ -279,6 +279,8 @@ func main() {
 				// 578,940 <-before:after-> 575,247
 				// sorting expected and producing tokens, and only storing the diff
 				// 575,247 <-before:after-> 467,620
+				// double delta encoding the values USELESS
+				// 311,529 <-before:after-> 622,079
 				dbuff[d] = binary.AppendUvarint(dbuff[d], values[i]-prev)
 				prev = values[i]
 				size := len(dbuff[d]) - l
