@@ -189,7 +189,14 @@ func main() {
 	//testCompression(file)
 
 	fmt.Println("searching for words")
-	re := regexp.MustCompile(`([\w]+|[^\w]+)[ ,.-]?`)
+	// CHANGES
+	// adjust token to allow hyphenated words
+	// 467,620 <-before:after-> 313,806
+	// 'the' 'of' 'and' are just part of antoher token now
+	// maybe 313983 Bytes
+	// maybe 311658 Bytes
+	re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.]+`)
+	//re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ,.]+`)
 	words := re.FindAll(file, -1)
 	fmt.Println("processing words")
 	counts := map[string]int{}
@@ -235,6 +242,7 @@ func main() {
 	}
 	buff := []byte{}
 	dbuff := map[int][]byte{}
+	biggestRules := map[string]int{}
 	maxd := 0
 	for k, prediction := range entries {
 		buff = binary.AppendUvarint(buff, uint64(mapped[k]))
@@ -243,13 +251,39 @@ func main() {
 				maxd = d
 			}
 			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(d))
-			for _, aRule := range rules {
+			// could we sort these and made them smaller?
+
+			values := []uint64{}
+			for t, aRule := range rules {
+				if d == 0 {
+					values = append(values, uint64(mapped[aRule.Produce]))
+				} else {
+					values = append(values, uint64(uint32(mapped[aRule.Produce])<<32|uint32(mapped[t])))
+				}
+			}
+			slices.Sort(values)
+
+			i := 0
+			prev := uint64(0)
+			for t, aRule := range rules {
+				biggestRules[k]++
 				count++
 				if len(aRule.Locations) == 1 {
 					//continue
 				}
-				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
-				//fmt.Printf("discovered rule '%v' '%v' '%v' '%v' %v\n", k, d, t, aRule.Produce, aRule.Locations)
+				l := len(dbuff[d])
+				//CHANGES
+				// combine two index into a single uint64 before encoding
+				// 1,017,455 <-before:after-> 578,940
+				// depth 0 matches do not need to encode the original token
+				// 578,940 <-before:after-> 575,247
+				// sorting expected and producing tokens, and only storing the diff
+				// 575,247 <-before:after-> 467,620
+				dbuff[d] = binary.AppendUvarint(dbuff[d], values[i]-prev)
+				prev = values[i]
+				size := len(dbuff[d]) - l
+				fmt.Printf("token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
+				i++
 			}
 		}
 	}
@@ -257,15 +291,28 @@ func main() {
 	fmt.Println("number of unique tokens", len(entries))
 	fmt.Printf("found %v rules\n", count)
 	fmt.Printf("%v rules / enique token\n", count/len(entries))
-	fmt.Printf("keys maybe %v KB\n", len(buff)/1024)
 	total := len(buff)
 	for i := 0; i <= maxd; i++ {
 		b := dbuff[i]
 		fmt.Printf("depth %v maybe %v Bytes\n", i, len(b))
 		total += len(b)
 	}
-	fmt.Printf("maybe %v KB total\n", total/1024)
+	fmt.Printf("maybe %v Bytes \n", total)
+	sbuff := []byte{}
+	for _, v := range unique {
+		sbuff = append(sbuff, []byte(v)...)
+	}
+	fmt.Printf("tokens maybe %v Bytes\n", len(sbuff))
 
+	fmt.Println("top 10 complex tokens")
+	slices.SortFunc(unique, func(a, b string) int {
+		//reversed for decending
+		return cmp.Compare(biggestRules[b], biggestRules[a])
+	})
+	for i := 0; i < 10; i++ {
+		fmt.Println("token", unique[i], biggestRules[unique[i]])
+	}
+	return
 	fmt.Println("regenerated text")
 	// lets try and regenerate it!
 	regenerated := []string{""}
