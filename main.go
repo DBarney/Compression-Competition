@@ -199,15 +199,49 @@ func (p *prediction) addLocation(loc int) {
 func (p *prediction) inflateRules() {
 	// pull the rules out of the first level
 	byExpect := map[string][]int{}
+
+	// the largest producer group should stay at the 0 level, better encoding
+	// 523,441 <-before:after-> 480,800
+	mapping := map[string]int{}
+	max := 0
+	maxKey := ""
 	for _, location := range p.rules[0][""].Locations {
+		key := p.context[location+1]
+		mapping[key]++
+		count := mapping[key]
+		if count > max {
+			max = count
+			maxKey = key
+		}
+	}
+
+	// now add into the level 0 mapping
+	locations := []int{}
+	orig := p.rules[0][""]
+	newRule := &rule{
+		Produce: maxKey,
+	}
+	p.rules[0] = map[string]*rule{
+		p.context[orig.Locations[0]]: newRule,
+	}
+	for _, location := range orig.Locations {
+		key := p.context[location+1]
+		if key != maxKey {
+			locations = append(locations, location)
+			continue
+		}
+		newRule.Locations = append(newRule.Locations, location)
+	}
+
+	for _, location := range locations {
 		key := p.context[location]
 		byExpect[key] = append(byExpect[key], location)
 	}
-	for depth := 0; true; depth++ {
-		p.rules[depth] = map[string]*rule{}
+	for depth := 1; true; depth++ {
 		if len(byExpect) == 0 {
 			break
 		}
+		p.rules[depth] = map[string]*rule{}
 		stay := map[string][]int{}
 		collision := map[string][]int{}
 		// we should work in sorted order let larger groups of rules stay at this level
@@ -279,7 +313,7 @@ func main() {
 	// maybe 313983 Bytes
 	// maybe 311658 Bytes
 	re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
-	//re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ,.]+`)
+	//re := regexp.MustCompile(`([\w-]+|[^\w]+)`)
 	words := re.FindAll(file, -1)
 	fmt.Println("processing words")
 	counts := map[string]int{}
@@ -341,19 +375,68 @@ func main() {
 	for i, s := range unique {
 		mapped[s] = i
 	}
+
+	fmt.Println("finding duplicate rules")
+	// find duplicate rules
+	ruleCount := map[uint64]int{}
+	for _, k := range unique {
+		prediction := entries[k]
+		for d, rules := range prediction.rules {
+			// record unique rules but not on depth 0, as thats shouldn't have dups that
+			if d == 0 {
+				continue
+			}
+			for t, rule := range rules {
+				// would corrospend to ther tokens
+				ruleCount[uint64(mapped[t])<<32|uint64(mapped[rule.Produce])]++
+			}
+		}
+	}
+	ruleDup := 0
+	ruleKey := []uint64{}
+	for k, v := range ruleCount {
+		if v > 1 {
+			ruleKey = append(ruleKey, k)
+			ruleDup += v
+		}
+	}
+
+	fmt.Println("sorting duplicate rules")
+	slices.Sort(ruleKey)
+	fmt.Println("getting unique rules")
+	slices.Compact(ruleKey)
+	fmt.Println("sorting unique rules")
+	slices.SortFunc(ruleKey, func(a, b uint64) int {
+		if ruleCount[b] == ruleCount[a] {
+			return cmp.Compare(b, a)
+		}
+		return cmp.Compare(ruleCount[b], ruleCount[a])
+	})
+
+	// setup mapping from rule id to sorted index
+	ruleMap := map[uint64]int{}
+	for k, v := range ruleKey {
+		ruleMap[v] = k
+	}
+
 	buff := []byte{}
+
+	// record rules
+
 	dbuff := map[int][]byte{}
 	biggestRules := map[string]int{}
 	maxd := 0
-	for k, prediction := range entries {
+	fmt.Println("encoding rules")
+	for _, k := range unique {
+		prediction := entries[k]
+		// just record the token in a different buffer
 		buff = binary.AppendUvarint(buff, uint64(mapped[k]))
 		for d, rules := range prediction.rules {
 			if d > maxd {
 				maxd = d
 			}
-			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(d))
-			// could we sort these and made them smaller?
 
+			// sort the keys so we can just write differences
 			keys := []int{}
 			for t := range rules {
 				keys = append(keys, mapped[t])
@@ -363,37 +446,67 @@ func main() {
 			// enableing delta encoding
 			// 575,964 <- before:after-> 521,657
 			delta := true
+			// diff encoding between produce vs expect
+			// 551,095 <- before:after-> 523,441
+			diff := true
 
 			for _, t := range keys {
 				aRule := rules[unique[t]]
 				biggestRules[k]++
+				produce := mapped[aRule.Produce]
 				count++
 				if len(aRule.Locations) == 1 {
 					//continue
 				}
 				l := len(dbuff[d])
-				//CHANGES
-				// depth 0 matches do not need to encode the original token
-				// 611,481 <-before:after-> 567,296
 
-				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
-				if d != 0 {
-					if delta {
-						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t-prev))
-						prev = t
+				// dedup rules and enocde their ids
+				// 480,861 <-before:after-> 476,051 1M
+				// 49,612,624 <-before:after-> 47,353,642 100M
+				enableRuleMap := true
+				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
+				idx, ok := ruleMap[id]
+				if ok && enableRuleMap {
+					//write out the duplicate rule
+					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
+					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(idx))
+					// we can still correctly do the delta encoding
+					prev = t
+				} else {
+					if diff {
+						dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce-t))
 					} else {
-						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t))
+						// probably should do Uvarint instead
+						dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce))
+					}
+
+					// depth 0 matches do not need to encode the original token
+					// 611,481 <-before:after-> 567,296
+					if d != 0 {
+
+						if delta {
+							dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t-prev))
+							prev = t
+						} else {
+							dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t))
+						}
 					}
 				}
 				size := len(dbuff[d]) - l
 				update("sample token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
 			}
+			// null terminate the list of rules maybe save %0.1 of the file size
+			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
 		}
 	}
+
 	fmt.Println("number of tokens", len(swords))
 	fmt.Println("number of unique tokens", len(entries))
 	fmt.Printf("found %v rules\n", count)
-	fmt.Printf("%v rules / enique token\n", count/len(entries))
+	fmt.Printf("found %v duplicate rules with %v rules\n", ruleDup, len(ruleKey))
+	fmt.Printf("%v rules / unique token\n", count/len(entries))
+	fmt.Printf("GOAL %v bytes, or %v bytes / rule\n", 100*1024, 100*1024/count)
+	fmt.Println("amount of bytes needed for single token", len(entries)/8)
 	total := len(buff)
 	for i := 0; i <= maxd; i++ {
 		b := dbuff[i]
