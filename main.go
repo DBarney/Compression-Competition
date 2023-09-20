@@ -265,7 +265,7 @@ func main() {
 				// 611,481 <-before:after-> 567,296
 
 				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
-				if d != -1 {
+				if d != 0 {
 					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[t]))
 				}
 				size := len(dbuff[d]) - l
