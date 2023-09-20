@@ -376,6 +376,43 @@ func main() {
 		mapped[s] = i
 	}
 
+	fmt.Println("encoidng as 000000100010000")
+	fmt.Printf("would need to allocate %v MB\n", len(unique)*len(unique)/8/1024/1024)
+	// each rule for a token would encode as either a byte or a uint32.
+	// it would represent how many leading 0s to write before writing a single 1.
+	// the index for the rules would be encoded as large as a uint32 as well
+	fmt.Println("sparsely populating a map")
+	ruleEntries := map[int][]uint64{}
+	for i, k := range unique {
+		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(unique))*100, k)
+		prediction := entries[k]
+		for _, rules := range prediction.rules {
+			for t, rule := range rules {
+				ruleEntries[mapped[t]] = append(ruleEntries[mapped[t]], uint64(mapped[rule.Produce]))
+			}
+		}
+	}
+	// now we just go through the unique list again and build the buffer
+	// probably should build the rule ids at the same time
+	sparseRuleBuf := []byte{}
+	ruleMapping := map[uint64]int{}
+	count = 1
+	for i, one := range unique {
+		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(unique))*100, one)
+		values := ruleEntries[mapped[one]]
+		slices.Sort(values)
+		values = slices.Compact(values)
+		prev := uint64(0)
+		for _, v := range values {
+			sparseRuleBuf = binary.AppendUvarint(sparseRuleBuf, v-prev)
+			ruleMapping[uint64(mapped[one])<<32|uint64(v)] = count
+			count++
+			prev = v
+		}
+		sparseRuleBuf = binary.AppendUvarint(sparseRuleBuf, 0)
+	}
+	fmt.Printf("sparse rule buffer is %v B in size\n", len(sparseRuleBuf))
+
 	fmt.Println("finding duplicate rules")
 	// find duplicate rules
 	ruleCount := map[uint64]int{}
@@ -450,7 +487,17 @@ func main() {
 			// 551,095 <- before:after-> 523,441
 			diff := true
 
+			allRuleMapping := []uint64{}
 			for _, t := range keys {
+				aRule := rules[unique[t]]
+				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
+				idx := ruleMapping[id]
+				allRuleMapping = append(allRuleMapping, uint64(idx))
+			}
+			slices.Sort(allRuleMapping)
+			allRuleMapping = slices.Compact(allRuleMapping)
+			pruleid := uint64(0)
+			for i, t := range keys {
 				aRule := rules[unique[t]]
 				biggestRules[k]++
 				produce := mapped[aRule.Produce]
@@ -465,30 +512,36 @@ func main() {
 				// 49,612,624 <-before:after-> 47,353,642 100M
 				enableRuleMap := true
 				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
-				idx, ok := ruleMap[id]
-				if ok && enableRuleMap {
-					//write out the duplicate rule
-					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
-					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(idx))
-					// we can still correctly do the delta encoding
-					prev = t
+				if true {
+					idx := allRuleMapping[i]
+					dbuff[d] = binary.AppendUvarint(dbuff[d], idx-pruleid)
+					pruleid = idx
 				} else {
-					if diff {
-						dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce-t))
+					idx, ok := ruleMap[id]
+					if ok && enableRuleMap {
+						//write out the duplicate rule
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(idx))
+						// we can still correctly do the delta encoding
+						prev = t
 					} else {
-						// probably should do Uvarint instead
-						dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce))
-					}
-
-					// depth 0 matches do not need to encode the original token
-					// 611,481 <-before:after-> 567,296
-					if d != 0 {
-
-						if delta {
-							dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t-prev))
-							prev = t
+						if diff {
+							dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce-t))
 						} else {
-							dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t))
+							// probably should do Uvarint instead
+							dbuff[d] = binary.AppendVarint(dbuff[d], int64(produce))
+						}
+
+						// depth 0 matches do not need to encode the original token
+						// 611,481 <-before:after-> 567,296
+						if d != 0 {
+
+							if delta {
+								dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t-prev))
+								prev = t
+							} else {
+								dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t))
+							}
 						}
 					}
 				}
@@ -513,12 +566,12 @@ func main() {
 		fmt.Printf("depth %v maybe %v Bytes\n", i, len(b))
 		total += len(b)
 	}
-	fmt.Printf("maybe %v MB \n", total)
+	fmt.Printf("maybe %v KB and %v KB\n", total/1024, len(sparseRuleBuf)/1024)
 	sbuff := []byte{}
 	for _, v := range unique {
 		sbuff = append(sbuff, []byte(v)...)
 	}
-	fmt.Printf("tokens maybe %v MB\n", len(sbuff))
+	fmt.Printf("tokens maybe %v KB\n", len(sbuff)/1024)
 
 	fmt.Println("top 10 complex tokens")
 	slices.SortFunc(unique, func(a, b string) int {
