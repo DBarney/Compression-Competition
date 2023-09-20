@@ -28,7 +28,8 @@ type entry struct {
 }
 
 type prediction struct {
-	rules map[int]map[string]*rule
+	rules   map[int]map[string]*rule
+	context []string
 }
 
 func (p *prediction) match(prev []string) (map[int]map[string]*rule, bool) {
@@ -180,6 +181,87 @@ func (p *prediction) predict(prev []string) string {
 	panic("we should have had a rule match somewhere...")
 }
 
+func (p *prediction) addLocation(loc int) {
+	rules, found := p.rules[0]
+	if !found {
+		rules = map[string]*rule{}
+		p.rules[0] = rules
+	}
+	aRule, found := rules[""]
+	if !found {
+		aRule = &rule{}
+		rules[""] = aRule
+	}
+	aRule.Locations = append(aRule.Locations, loc)
+}
+
+func (p *prediction) inflateRules() {
+	// pull the rules out of the first level
+	byExpect := map[string][]int{}
+	for _, location := range p.rules[0][""].Locations {
+		key := p.context[location]
+		byExpect[key] = append(byExpect[key], location)
+	}
+	for depth := 0; true; depth++ {
+		p.rules[depth] = map[string]*rule{}
+		if len(byExpect) == 0 {
+			break
+		}
+		stay := map[string][]int{}
+		collision := map[string][]int{}
+		// we should work in sorted order let larger groups of rules stay at this level
+		for k, v := range byExpect {
+			values, ok := stay[k]
+			if !ok {
+				stay[k] = append(stay[k], v[0])
+				values = stay[k]
+			}
+			skip := []int{}
+			// maybe filter to largest group?
+			for _, l := range v[1:] {
+				if p.context[values[0]+1] == p.context[l+1] {
+					stay[k] = append(stay[k], l)
+				} else {
+					skip = append(skip, l)
+				}
+			}
+
+			// all rules that have collisions need to be shifted down deeper
+			for _, location := range skip {
+				if location == depth {
+					// we need to swap
+					t := stay[k]
+					stay[k] = []int{location}
+					fmt.Println("swapping", location, t)
+					// work on the swapped values
+					for _, location := range t {
+						key := p.context[location-depth-1]
+						collision[key] = append(collision[key], location)
+					}
+					continue
+				}
+				key := p.context[location-depth-1]
+				collision[key] = append(collision[key], location)
+			}
+		}
+
+		// add in rules that are staying at this depth
+		for expected, locations := range stay {
+			_, ok := p.rules[depth][expected]
+			if ok {
+				panic("there should be no rules at this depth or key yet")
+			}
+			// all these rules should produce the same token.
+			p.rules[depth][expected] = &rule{
+				Produce:   p.context[locations[0]+1],
+				Locations: locations,
+			}
+		}
+
+		byExpect = collision
+	}
+}
+
 func main() {
 	fmt.Println("reading file into memory")
 	file, err := os.ReadFile(os.Args[1])
@@ -201,41 +283,52 @@ func main() {
 	fmt.Println("processing words")
 	counts := map[string]int{}
 	swords := []string{""}
-	prev := ""
-	length := 51
 	entries := map[string]*prediction{}
 	needUpdate := time.NewTicker(time.Second / 10)
-	for i, v := range words {
-		if i == length {
-			//break
-		}
-		token := string(v)
-		p, found := entries[prev]
-		if !found {
-			p = &prediction{
-				rules: map[int]map[string]*rule{},
-			}
-			entries[prev] = p
-		}
+	update := func(pattern string, values ...interface{}) {
 		select {
 		case <-needUpdate.C:
-			fmt.Fprintf(os.Stderr, "%05.2f disovering rules for '%v'      \r", float32(i)/float32(len(words))*100, token)
+			fmt.Fprintf(os.Stderr, pattern, values...)
 		default:
 		}
-		counts[token]++
-		p.addToken(swords, token)
-		prev = token
+	}
+	for _, v := range words {
+		token := string(v)
 		swords = append(swords, token)
 	}
+	for i, token := range swords {
+		if i == len(swords)-1 {
+			break
+		}
+		p, found := entries[token]
+		if !found {
+			p = &prediction{
+				rules:   map[int]map[string]*rule{},
+				context: swords,
+			}
+			entries[token] = p
+		}
+		update("%05.2f populating locations for '%v'      \r", float32(i)/float32(len(words))*100, token)
+		counts[token]++
+		p.addLocation(i)
+	}
 
-	fmt.Println("")
-	fmt.Println("all rules")
-	count := 0
+	fmt.Println("getting unique tokens")
 	unique := []string{}
 	for k := range entries {
 		unique = append(unique, k)
 	}
 	slices.Sort(unique)
+	fmt.Println("inflating rules")
+	for i, token := range unique {
+		pred := entries[token]
+		pred.inflateRules()
+		update("%05.2f inflating rules for '%v'      \r", float32(i)/float32(len(unique))*100, token)
+	}
+
+	fmt.Println("")
+	fmt.Println("all rules")
+	count := 0
 	mapped := map[string]int{}
 	for i, s := range unique {
 		mapped[s] = i
@@ -302,7 +395,7 @@ func main() {
 	fmt.Println("regenerated text")
 	// lets try and regenerate it!
 	regenerated := []string{""}
-	for i := 0; i < length; i++ {
+	for i := 0; i < 51; i++ {
 		prediction := entries[regenerated[i]]
 		next := prediction.predict(regenerated)
 		if swords[i+1] != next {
