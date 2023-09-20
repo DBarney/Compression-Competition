@@ -253,18 +253,6 @@ func main() {
 			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(d))
 			// could we sort these and made them smaller?
 
-			values := []uint64{}
-			for t, aRule := range rules {
-				if d == 0 {
-					values = append(values, uint64(mapped[aRule.Produce]))
-				} else {
-					values = append(values, uint64(uint32(mapped[aRule.Produce])<<32|uint32(mapped[t])))
-				}
-			}
-			slices.Sort(values)
-
-			i := 0
-			prev := uint64(0)
 			for t, aRule := range rules {
 				biggestRules[k]++
 				count++
@@ -273,19 +261,15 @@ func main() {
 				}
 				l := len(dbuff[d])
 				//CHANGES
-				// combine two index into a single uint64 before encoding
-				// 1,017,455 <-before:after-> 578,940
 				// depth 0 matches do not need to encode the original token
-				// 578,940 <-before:after-> 575,247
-				// sorting expected and producing tokens, and only storing the diff
-				// 575,247 <-before:after-> 467,620
-				// double delta encoding the values USELESS
-				// 311,529 <-before:after-> 622,079
-				dbuff[d] = binary.AppendUvarint(dbuff[d], values[i]-prev)
-				prev = values[i]
+				// 611,481 <-before:after-> 567,296
+
+				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
+				if d != -1 {
+					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[t]))
+				}
 				size := len(dbuff[d]) - l
 				fmt.Printf("token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
-				i++
 			}
 		}
 	}
