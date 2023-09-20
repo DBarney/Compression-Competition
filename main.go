@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -277,7 +278,7 @@ func main() {
 	// 'the' 'of' 'and' are just part of antoher token now
 	// maybe 313983 Bytes
 	// maybe 311658 Bytes
-	re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.]+`)
+	re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
 	//re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ,.]+`)
 	words := re.FindAll(file, -1)
 	fmt.Println("processing words")
@@ -292,8 +293,9 @@ func main() {
 		default:
 		}
 	}
-	for _, v := range words {
+	for i, v := range words {
 		token := string(v)
+		update("%05.2f stringing for '%v'      \r", float32(i)/float32(len(words))*100, token)
 		swords = append(swords, token)
 	}
 	for i, token := range swords {
@@ -320,11 +322,17 @@ func main() {
 	}
 	slices.Sort(unique)
 	fmt.Println("inflating rules")
+	wg := &sync.WaitGroup{}
 	for i, token := range unique {
 		pred := entries[token]
-		pred.inflateRules()
-		update("%05.2f inflating rules for '%v'      \r", float32(i)/float32(len(unique))*100, token)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pred.inflateRules()
+			update("%05.2f inflating rules for '%v'      \r", float32(i)/float32(len(unique))*100, token)
+		}()
 	}
+	wg.Wait()
 
 	fmt.Println("")
 	fmt.Println("all rules")
@@ -346,7 +354,18 @@ func main() {
 			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(d))
 			// could we sort these and made them smaller?
 
-			for t, aRule := range rules {
+			keys := []int{}
+			for t := range rules {
+				keys = append(keys, mapped[t])
+			}
+			slices.Sort(keys)
+			prev := 0
+			// enableing delta encoding
+			// 575,964 <- before:after-> 521,657
+			delta := true
+
+			for _, t := range keys {
+				aRule := rules[unique[t]]
 				biggestRules[k]++
 				count++
 				if len(aRule.Locations) == 1 {
@@ -359,10 +378,15 @@ func main() {
 
 				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
 				if d != 0 {
-					dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[t]))
+					if delta {
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t-prev))
+						prev = t
+					} else {
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(t))
+					}
 				}
 				size := len(dbuff[d]) - l
-				fmt.Printf("token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
+				update("sample token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
 			}
 		}
 	}
@@ -376,12 +400,12 @@ func main() {
 		fmt.Printf("depth %v maybe %v Bytes\n", i, len(b))
 		total += len(b)
 	}
-	fmt.Printf("maybe %v Bytes \n", total)
+	fmt.Printf("maybe %v MB \n", total)
 	sbuff := []byte{}
 	for _, v := range unique {
 		sbuff = append(sbuff, []byte(v)...)
 	}
-	fmt.Printf("tokens maybe %v Bytes\n", len(sbuff))
+	fmt.Printf("tokens maybe %v MB\n", len(sbuff))
 
 	fmt.Println("top 10 complex tokens")
 	slices.SortFunc(unique, func(a, b string) int {
