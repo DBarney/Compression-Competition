@@ -263,7 +263,40 @@ func (p *prediction) inflateRules() {
 				found 15572 duplicate rules with 5033 rules
 				12 rules / unique token
 			*/
-			if p.counts[k] == 1 && false {
+			/*
+				maybe 2231 KB and 1407 KB
+				tokens maybe 563 KB
+
+				maybe 2245 KB and 1344 KB
+				tokens maybe 563 KB
+			*/
+
+			/*
+				found 16412236 rules
+				found 3834131 duplicate rules with 890965 rules
+				maybe 22091 KB and 12322 KB
+				tokens maybe 2462 KB
+
+				found 16298349 rules
+				found 3940422 duplicate rules with 916371 rules
+				maybe 22150 KB and 11862 KB
+				tokens maybe 2462 KB
+			*/
+			/*
+				found 119819955 rules
+				found 37893247 duplicate rules with 7714412 rules
+				117 rules / unique token
+				maybe 174101 KB and 85987 KB
+				tokens maybe 10546 KB
+
+				found 118869944 rules
+				found 38692264 duplicate rules with 7875862 rules
+				116 rules / unique token
+				maybe 174211 KB and 82522 KB
+				tokens maybe 10546 KB
+			*/
+			if p.counts[k] <= 1 {
+				// a value of 1 maybe saves 3 MB?
 				skip = v
 			} else {
 				values, ok := stay[k]
@@ -443,6 +476,7 @@ func main() {
 	// the index for the rules would be encoded as large as a uint32 as well
 	fmt.Println("sparsely populating a map")
 	ruleEntries := map[int][]uint64{}
+	ruleCount := map[uint64]int{}
 	for i, k := range meta.Unique {
 		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(meta.Unique))*100, k)
 		prediction := entries[k]
@@ -468,6 +502,7 @@ func main() {
 			}
 			for t, rule := range rules {
 				ruleEntries[meta.Lookup[t]] = append(ruleEntries[meta.Lookup[t]], uint64(meta.Lookup[rule.Produce]))
+				ruleCount[uint64(meta.Lookup[t])<<32|uint64(meta.Lookup[rule.Produce])]++
 			}
 		}
 	}
@@ -494,20 +529,6 @@ func main() {
 
 	fmt.Println("finding duplicate rules")
 	// find duplicate rules
-	ruleCount := map[uint64]int{}
-	for _, k := range meta.Unique {
-		prediction := entries[k]
-		for d, rules := range prediction.rules {
-			// record unique rules but not on depth 0, as thats shouldn't have dups that
-			if d == 0 {
-				continue
-			}
-			for t, rule := range rules {
-				// would corrospend to ther tokens
-				ruleCount[uint64(meta.Lookup[t])<<32|uint64(meta.Lookup[rule.Produce])]++
-			}
-		}
-	}
 	ruleDup := 0
 	ruleKey := []uint64{}
 	for k, v := range ruleCount {
@@ -644,13 +665,13 @@ func main() {
 		}
 	}
 
-	fmt.Println("number of tokens", len(meta.Unique))
-	fmt.Println("number of unique tokens", len(entries))
+	fmt.Println("number of tokens", len(meta.Words))
+	fmt.Println("number of unique tokens", len(meta.Unique))
 	fmt.Printf("found %v rules\n", count)
 	fmt.Printf("found %v duplicate rules with %v rules\n", ruleDup, len(ruleKey))
-	fmt.Printf("%v rules / unique token\n", count/len(entries))
-	fmt.Printf("GOAL %v bytes, or %v bytes / rule\n", 100*1024, 100*1024/count)
-	fmt.Println("amount of bytes needed for single token", len(entries)/8)
+	fmt.Printf("%v rules / unique token\n", count/len(meta.Unique))
+	fmt.Printf("%.2f rules / total token\n", float32(count)/float32(len(meta.Words)))
+
 	total := len(buff)
 	for i := 0; i <= maxd; i++ {
 		b := dbuff[i]
@@ -663,6 +684,7 @@ func main() {
 		sbuff = append(sbuff, []byte(v)...)
 	}
 	fmt.Printf("tokens maybe %v KB\n", len(sbuff)/1024)
+	fmt.Printf("%.8f bytes / token\n", float32(total+len(sparseRuleBuf)+len(sbuff))/float32(len(meta.Words)))
 
 	fmt.Println("top 10 complex tokens")
 	slices.SortFunc(meta.Unique, func(a, b string) int {
