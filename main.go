@@ -312,8 +312,8 @@ func main() {
 	// 'the' 'of' 'and' are just part of antoher token now
 	// maybe 313983 Bytes
 	// maybe 311658 Bytes
-	re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
-	//re := regexp.MustCompile(`([\w-]+|[^\w]+)`)
+	//re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
+	re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]+`)
 	words := re.FindAll(file, -1)
 	fmt.Println("processing words")
 	counts := map[string]int{}
@@ -386,7 +386,26 @@ func main() {
 	for i, k := range unique {
 		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(unique))*100, k)
 		prediction := entries[k]
-		for _, rules := range prediction.rules {
+		for d, rules := range prediction.rules {
+			// we don't care about rules that only match a single thing
+			/*
+				before
+					number of tokens 126816
+					number of unique tokens 14536
+					found 191188 rules
+					found 13512 duplicate rules with 4401 rules
+					13 rules / unique token
+
+				after
+					number of tokens 126816
+					number of unique tokens 14536
+					found 177248 rules
+					found 13515 duplicate rules with 4410 rules
+					12 rules / unique token
+			*/
+			if d == 0 {
+				continue
+			}
 			for t, rule := range rules {
 				ruleEntries[mapped[t]] = append(ruleEntries[mapped[t]], uint64(mapped[rule.Produce]))
 			}
@@ -513,6 +532,12 @@ func main() {
 				enableRuleMap := true
 				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
 				if true {
+					// just write out the token id, we don't care about rules that match a<-a->b
+					// they can only match in a single location
+					if d == 0 {
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
+						continue
+					}
 					idx := allRuleMapping[i]
 					dbuff[d] = binary.AppendUvarint(dbuff[d], idx-pruleid)
 					pruleid = idx
@@ -549,7 +574,10 @@ func main() {
 				update("sample token:'%v' depth:'%v' expect:'%v' produce:'%v' locations:%v bytes %v\n", k, d, t, aRule.Produce, aRule.Locations, size)
 			}
 			// null terminate the list of rules maybe save %0.1 of the file size
-			dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
+			// only one option is possible at a depth of 0, so no need to null terminate
+			if d != 0 {
+				dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(0))
+			}
 		}
 	}
 
