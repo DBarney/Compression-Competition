@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"compress/lzw"
 	"encoding/binary"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,7 @@ type entry struct {
 type prediction struct {
 	rules   map[int]map[string]*rule
 	context []string
+	counts  map[string]int
 }
 
 func (p *prediction) match(prev []string) (map[int]map[string]*rule, bool) {
@@ -246,18 +248,37 @@ func (p *prediction) inflateRules() {
 		collision := map[string][]int{}
 		// we should work in sorted order let larger groups of rules stay at this level
 		for k, v := range byExpect {
-			values, ok := stay[k]
-			if !ok {
-				stay[k] = append(stay[k], v[0])
-				values = stay[k]
-			}
 			skip := []int{}
-			// maybe filter to largest group?
-			for _, l := range v[1:] {
-				if p.context[values[0]+1] == p.context[l+1] {
-					stay[k] = append(stay[k], l)
-				} else {
-					skip = append(skip, l)
+
+			// if this rule is using a unique token as what it is expecting,
+			// we want to look for a rule with a less unique token
+			/* 1MB file
+			before
+				found 177303 rules
+				found 13559 duplicate rules with 4415 rules
+				12 rules / unique token
+
+			after
+				found 175508 rules
+				found 15572 duplicate rules with 5033 rules
+				12 rules / unique token
+			*/
+			if p.counts[k] == 1 && false {
+				skip = v
+			} else {
+				values, ok := stay[k]
+				if !ok {
+					stay[k] = append(stay[k], v[0])
+					v = v[1:]
+					values = stay[k]
+				}
+				// maybe filter to largest group?
+				for _, l := range v {
+					if p.context[values[0]+1] == p.context[l+1] {
+						stay[k] = append(stay[k], l)
+					} else {
+						skip = append(skip, l)
+					}
 				}
 			}
 
@@ -298,27 +319,15 @@ func (p *prediction) inflateRules() {
 }
 
 func main() {
-	fmt.Println("reading file into memory")
-	file, err := os.ReadFile(os.Args[1])
-	if err != nil {
-		panic(err)
-	}
-	//testCompression(file)
+	meta := &struct {
+		Words     []string
+		Count     map[string]int
+		Unique    []string
+		Lookup    map[string]int
+		RLookup   map[int]string
+		Locations map[string][]int
+	}{}
 
-	fmt.Println("searching for words")
-	// CHANGES
-	// adjust token to allow hyphenated words
-	// 467,620 <-before:after-> 313,806
-	// 'the' 'of' 'and' are just part of antoher token now
-	// maybe 313983 Bytes
-	// maybe 311658 Bytes
-	//re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
-	re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]+`)
-	words := re.FindAll(file, -1)
-	fmt.Println("processing words")
-	counts := map[string]int{}
-	swords := []string{""}
-	entries := map[string]*prediction{}
 	needUpdate := time.NewTicker(time.Second / 10)
 	update := func(pattern string, values ...interface{}) {
 		select {
@@ -327,64 +336,115 @@ func main() {
 		default:
 		}
 	}
-	for i, v := range words {
-		token := string(v)
-		update("%05.2f stringing for '%v'      \r", float32(i)/float32(len(words))*100, token)
-		swords = append(swords, token)
+
+	words := []string{}
+	fmt.Println("reading precomputed tokens")
+	gobs, err := os.Open(os.Args[1] + ".gob")
+	if err == nil {
+		defer gobs.Close()
+		d := gob.NewDecoder(gobs)
+
+		err = d.Decode(&meta)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		fmt.Println("failed: ", err)
+		fmt.Println("reading file into memory")
+		file, err := os.ReadFile(os.Args[1])
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Println("searching for words")
+		// CHANGES
+		// adjust token to allow hyphenated words
+		// 467,620 <-before:after-> 313,806
+		// 'the' 'of' 'and' are just part of antoher token now
+		// maybe 313983 Bytes
+		// maybe 311658 Bytes
+
+		// I probably should start pre computing these tokens
+		// it takes for ever to generate them
+		//re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
+		re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]+`)
+		chunks := re.FindAll(file, -1)
+		fmt.Println("processing chunks")
+		meta.Words = []string{""}
+		meta.Count = map[string]int{}
+		meta.Locations = map[string][]int{}
+		for i, v := range chunks {
+			token := string(v)
+			update("%05.2f stringing for '%v'      \r", float32(i)/float32(len(chunks))*100, token)
+			meta.Words = append(meta.Words, token)
+			meta.Count[token]++
+			meta.Unique = append(meta.Unique, token)
+			meta.Locations[token] = append(meta.Locations[token], i+1) // to account for the first ""
+		}
+		meta.Words = append(meta.Words, "") // just incase we try and look beyond the bounds
+
+		slices.Sort(meta.Unique)
+		meta.Unique = slices.Compact(meta.Unique)
+		meta.Lookup = map[string]int{}
+		meta.RLookup = map[int]string{}
+		for i, token := range meta.Unique {
+			meta.Lookup[token] = i
+			meta.RLookup[i] = token
+		}
+		gobs, err = os.Create(os.Args[1] + ".gob")
+		if err != nil {
+			panic(err)
+
+		}
+		defer gobs.Close()
+		e := gob.NewEncoder(gobs)
+
+		err = e.Encode(meta)
+		if err != nil {
+			panic(err)
+		}
 	}
-	for i, token := range swords {
-		if i == len(swords)-1 {
-			break
+	entries := map[string]*prediction{}
+	for i, word := range meta.Words {
+		entries[word] = &prediction{
+			rules: map[int]map[string]*rule{
+				0: map[string]*rule{
+					"": &rule{
+						Locations: meta.Locations[word],
+					},
+				},
+			},
+			context: meta.Words,
+			counts:  meta.Count,
 		}
-		p, found := entries[token]
-		if !found {
-			p = &prediction{
-				rules:   map[int]map[string]*rule{},
-				context: swords,
-			}
-			entries[token] = p
-		}
-		update("%05.2f populating locations for '%v'      \r", float32(i)/float32(len(words))*100, token)
-		counts[token]++
-		p.addLocation(i)
+		update("%05.2f populating locations for '%v'      \r", float32(i)/float32(len(meta.Words))*100, word)
 	}
 
-	fmt.Println("getting unique tokens")
-	unique := []string{}
-	for k := range entries {
-		unique = append(unique, k)
-	}
-	slices.Sort(unique)
 	fmt.Println("inflating rules")
 	wg := &sync.WaitGroup{}
-	for i, token := range unique {
-		pred := entries[token]
+	for i, word := range meta.Unique {
+		pred := entries[word]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			pred.inflateRules()
-			update("%05.2f inflating rules for '%v'      \r", float32(i)/float32(len(unique))*100, token)
+			update("%05.2f inflating rules for '%v'      \r", float32(i)/float32(len(meta.Unique))*100, word)
 		}()
 	}
 	wg.Wait()
 
 	fmt.Println("")
 	fmt.Println("all rules")
-	count := 0
-	mapped := map[string]int{}
-	for i, s := range unique {
-		mapped[s] = i
-	}
 
 	fmt.Println("encoidng as 000000100010000")
-	fmt.Printf("would need to allocate %v MB\n", len(unique)*len(unique)/8/1024/1024)
+	fmt.Printf("would need to allocate %v MB\n", len(meta.Unique)*len(meta.Unique)/8/1024/1024)
 	// each rule for a token would encode as either a byte or a uint32.
 	// it would represent how many leading 0s to write before writing a single 1.
 	// the index for the rules would be encoded as large as a uint32 as well
 	fmt.Println("sparsely populating a map")
 	ruleEntries := map[int][]uint64{}
-	for i, k := range unique {
-		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(unique))*100, k)
+	for i, k := range meta.Unique {
+		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(meta.Unique))*100, k)
 		prediction := entries[k]
 		for d, rules := range prediction.rules {
 			// we don't care about rules that only match a single thing
@@ -407,7 +467,7 @@ func main() {
 				continue
 			}
 			for t, rule := range rules {
-				ruleEntries[mapped[t]] = append(ruleEntries[mapped[t]], uint64(mapped[rule.Produce]))
+				ruleEntries[meta.Lookup[t]] = append(ruleEntries[meta.Lookup[t]], uint64(meta.Lookup[rule.Produce]))
 			}
 		}
 	}
@@ -415,16 +475,16 @@ func main() {
 	// probably should build the rule ids at the same time
 	sparseRuleBuf := []byte{}
 	ruleMapping := map[uint64]int{}
-	count = 1
-	for i, one := range unique {
-		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(unique))*100, one)
-		values := ruleEntries[mapped[one]]
+	count := 1
+	for i, one := range meta.Unique {
+		update("%05.2f populating rules for '%v'      \r", float32(i)/float32(len(meta.Unique))*100, one)
+		values := ruleEntries[meta.Lookup[one]]
 		slices.Sort(values)
 		values = slices.Compact(values)
 		prev := uint64(0)
 		for _, v := range values {
 			sparseRuleBuf = binary.AppendUvarint(sparseRuleBuf, v-prev)
-			ruleMapping[uint64(mapped[one])<<32|uint64(v)] = count
+			ruleMapping[uint64(meta.Lookup[one])<<32|uint64(v)] = count
 			count++
 			prev = v
 		}
@@ -435,7 +495,7 @@ func main() {
 	fmt.Println("finding duplicate rules")
 	// find duplicate rules
 	ruleCount := map[uint64]int{}
-	for _, k := range unique {
+	for _, k := range meta.Unique {
 		prediction := entries[k]
 		for d, rules := range prediction.rules {
 			// record unique rules but not on depth 0, as thats shouldn't have dups that
@@ -444,7 +504,7 @@ func main() {
 			}
 			for t, rule := range rules {
 				// would corrospend to ther tokens
-				ruleCount[uint64(mapped[t])<<32|uint64(mapped[rule.Produce])]++
+				ruleCount[uint64(meta.Lookup[t])<<32|uint64(meta.Lookup[rule.Produce])]++
 			}
 		}
 	}
@@ -483,10 +543,10 @@ func main() {
 	biggestRules := map[string]int{}
 	maxd := 0
 	fmt.Println("encoding rules")
-	for _, k := range unique {
+	for _, k := range meta.Unique {
 		prediction := entries[k]
 		// just record the token in a different buffer
-		buff = binary.AppendUvarint(buff, uint64(mapped[k]))
+		buff = binary.AppendUvarint(buff, uint64(meta.Lookup[k]))
 		for d, rules := range prediction.rules {
 			if d > maxd {
 				maxd = d
@@ -495,7 +555,7 @@ func main() {
 			// sort the keys so we can just write differences
 			keys := []int{}
 			for t := range rules {
-				keys = append(keys, mapped[t])
+				keys = append(keys, meta.Lookup[t])
 			}
 			slices.Sort(keys)
 			prev := 0
@@ -508,8 +568,11 @@ func main() {
 
 			allRuleMapping := []uint64{}
 			for _, t := range keys {
-				aRule := rules[unique[t]]
-				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
+				aRule := rules[meta.RLookup[t]]
+				if aRule == nil {
+					fmt.Println(t, keys, rules, meta.RLookup[t])
+				}
+				id := uint64(t)<<32 | uint64(meta.Lookup[aRule.Produce])
 				idx := ruleMapping[id]
 				allRuleMapping = append(allRuleMapping, uint64(idx))
 			}
@@ -517,9 +580,9 @@ func main() {
 			allRuleMapping = slices.Compact(allRuleMapping)
 			pruleid := uint64(0)
 			for i, t := range keys {
-				aRule := rules[unique[t]]
+				aRule := rules[meta.RLookup[t]]
 				biggestRules[k]++
-				produce := mapped[aRule.Produce]
+				produce := meta.Lookup[aRule.Produce]
 				count++
 				if len(aRule.Locations) == 1 {
 					//continue
@@ -530,12 +593,12 @@ func main() {
 				// 480,861 <-before:after-> 476,051 1M
 				// 49,612,624 <-before:after-> 47,353,642 100M
 				enableRuleMap := true
-				id := uint64(t)<<32 | uint64(mapped[aRule.Produce])
+				id := uint64(t)<<32 | uint64(meta.Lookup[aRule.Produce])
 				if true {
 					// just write out the token id, we don't care about rules that match a<-a->b
 					// they can only match in a single location
 					if d == 0 {
-						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(mapped[aRule.Produce]))
+						dbuff[d] = binary.AppendUvarint(dbuff[d], uint64(meta.Lookup[aRule.Produce]))
 						continue
 					}
 					idx := allRuleMapping[i]
@@ -581,7 +644,7 @@ func main() {
 		}
 	}
 
-	fmt.Println("number of tokens", len(swords))
+	fmt.Println("number of tokens", len(meta.Unique))
 	fmt.Println("number of unique tokens", len(entries))
 	fmt.Printf("found %v rules\n", count)
 	fmt.Printf("found %v duplicate rules with %v rules\n", ruleDup, len(ruleKey))
@@ -596,18 +659,18 @@ func main() {
 	}
 	fmt.Printf("maybe %v KB and %v KB\n", total/1024, len(sparseRuleBuf)/1024)
 	sbuff := []byte{}
-	for _, v := range unique {
+	for _, v := range meta.Unique {
 		sbuff = append(sbuff, []byte(v)...)
 	}
 	fmt.Printf("tokens maybe %v KB\n", len(sbuff)/1024)
 
 	fmt.Println("top 10 complex tokens")
-	slices.SortFunc(unique, func(a, b string) int {
+	slices.SortFunc(meta.Unique, func(a, b string) int {
 		//reversed for decending
 		return cmp.Compare(biggestRules[b], biggestRules[a])
 	})
 	for i := 0; i < 10; i++ {
-		fmt.Println("token", unique[i], biggestRules[unique[i]])
+		fmt.Println("token", meta.Unique[i], biggestRules[meta.Unique[i]])
 	}
 	return
 	fmt.Println("regenerated text")
@@ -616,42 +679,13 @@ func main() {
 	for i := 0; i < 51; i++ {
 		prediction := entries[regenerated[i]]
 		next := prediction.predict(regenerated)
-		if swords[i+1] != next {
-			fmt.Println("#", swords[i], next)
+		if words[i+1] != next {
+			fmt.Println("#", words[i], next)
 		}
 		regenerated = append(regenerated, next)
 	}
 	fmt.Println(regenerated)
 
-	return
-	fmt.Println("sorting")
-	slices.Sort(swords)
-	fmt.Println("removing duplicates")
-	swords = slices.Compact(swords)
-	fmt.Println("unique words")
-	fmt.Println(len(swords))
-	fmt.Println("sorting according to weight")
-	slices.SortFunc(swords, func(a, b string) int {
-		if counts[a] == counts[b] {
-			return cmp.Compare(b, a)
-		}
-		return cmp.Compare(counts[b], counts[a]) //reversed
-	})
-	if false {
-		for i := 0; i < 30; i++ {
-			fmt.Printf("sorted sample: %v %v %v\n", swords[i], counts[swords[i]], []byte(swords[i]))
-		}
-	}
-	posMap := map[string]int{}
-	for i, w := range swords {
-		posMap[w] = i
-	}
-	size := 0
-	for _, word := range swords {
-		size += len(word) + 1 // one extra for length encoding
-		fmt.Printf("word list size %v KB\r", size/1024)
-	}
-	fmt.Println("")
 }
 
 func testCompression(buf []byte) {
