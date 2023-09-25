@@ -23,6 +23,17 @@ type prediction struct {
 	countOrder map[string]int
 }
 
+func predict(entries map[string]*prediction, first string, count int) []string {
+
+	regenerated := []string{first}
+	for i := 0; i < count-1; i++ {
+		prediction := entries[regenerated[i]]
+		next := prediction.predict(regenerated)
+		regenerated = append(regenerated, next)
+	}
+	return regenerated
+}
+
 func fromFile(meta *file) map[string]*prediction {
 	entries := map[string]*prediction{}
 	for i, word := range meta.Words {
@@ -40,6 +51,8 @@ func fromFile(meta *file) map[string]*prediction {
 		}
 		update("%05.2f building prediction structures\r", float32(i)/float32(len(meta.Words))*100)
 	}
+	// this was never added
+	entries[""].rules[0][""].Locations = []int{0}
 
 	fmt.Println("inflating rules")
 	wg := &sync.WaitGroup{}
@@ -58,6 +71,7 @@ func fromFile(meta *file) map[string]*prediction {
 		}()
 	}
 	for i, word := range meta.Unique {
+		//fmt.Printf("working on '%v'\n", word)
 		work <- struct {
 			p *prediction
 			i int
@@ -69,14 +83,31 @@ func fromFile(meta *file) map[string]*prediction {
 	close(work)
 	wg.Wait()
 
+	// cover the very first empty token. its not part of the Unique list
+	entries[""].inflateRules(100, update)
+
 	return entries
 }
 
 func (p *prediction) match(prev []string) (map[int]map[string]*rule, bool) {
 	found := map[int]map[string]*rule{}
 	loc := len(prev) - 1
-	for d, rules := range p.rules {
+	depth := []int{}
+	for d := range p.rules {
+		depth = append(depth, d)
+	}
+	slices.Sort(depth)
+	for i := 0; i < len(depth); i++ {
+		//for i := len(depth) - 1; i >= 0; i-- {
+		d := depth[i]
+		if d > len(prev) {
+			continue
+		}
+		rules := p.rules[d]
 		for expected, aRule := range rules {
+			if loc-d < 0 {
+				continue
+			}
 			if prev[loc-d] == expected {
 				frules, ok := found[d]
 				if !ok {
@@ -213,8 +244,18 @@ func (p *prediction) predict(prev []string) string {
 		panic("unable to predict next token")
 	}
 	// double check that we only have one?
-	fmt.Println(matchRules)
-	for _, rules := range matchRules {
+	//fmt.Println("found", prev, matchRules)
+	keys := []int{}
+
+	for key := range matchRules {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	for i := 0; i < len(keys); i++ {
+		//for i := len(keys) - 1; i >= 0; i-- {
+		key := keys[i]
+		rules := matchRules[key]
 		for _, aRule := range rules {
 			return aRule.Produce
 		}
@@ -237,60 +278,74 @@ func (p *prediction) addLocation(loc int) {
 }
 
 func (p *prediction) inflateRules(percent float32, update func(string, ...interface{})) {
+	//fmt.Println("working on", p.context[p.rules[0][""].Locations[0]])
 	// pull the rules out of the first level
 	byExpect := map[string][]int{}
+	/*
+		// the largest producer group should stay at the 0 level, better encoding
+		// 523,441 <-before:after-> 480,800
+		mapping := map[string]int{}
+		max := 0
+		maxKey := ""
+		for _, location := range p.rules[0][""].Locations {
+			key := p.context[location+1]
+			mapping[key]++
+			count := mapping[key]
+			if count > max {
+				max = count
+				maxKey = key
+			}
+		}
 
-	// the largest producer group should stay at the 0 level, better encoding
-	// 523,441 <-before:after-> 480,800
-	mapping := map[string]int{}
-	max := 0
-	maxKey := ""
+		// now add into the level 0 mapping
+		locations := []int{}
+		orig := p.rules[0][""]
+		newRule := &rule{
+			Produce: maxKey,
+		}
+		p.rules[0] = map[string]*rule{
+			p.context[orig.Locations[0]]: newRule,
+		}
+		for _, location := range orig.Locations {
+			key := p.context[location+1]
+			if key != maxKey {
+				locations = append(locations, location)
+				continue
+			}
+			newRule.Locations = append(newRule.Locations, location)
+		}
+
+		for _, location := range locations {
+			key := p.context[location-1]
+			byExpect[key] = append(byExpect[key], location)
+		}
+	*/
 	for _, location := range p.rules[0][""].Locations {
-		key := p.context[location+1]
-		mapping[key]++
-		count := mapping[key]
-		if count > max {
-			max = count
-			maxKey = key
-		}
-	}
-
-	// now add into the level 0 mapping
-	locations := []int{}
-	orig := p.rules[0][""]
-	newRule := &rule{
-		Produce: maxKey,
-	}
-	p.rules[0] = map[string]*rule{
-		p.context[orig.Locations[0]]: newRule,
-	}
-	for _, location := range orig.Locations {
-		key := p.context[location+1]
-		if key != maxKey {
-			locations = append(locations, location)
-			continue
-		}
-		newRule.Locations = append(newRule.Locations, location)
-	}
-
-	for _, location := range locations {
 		key := p.context[location]
 		byExpect[key] = append(byExpect[key], location)
 	}
-	for depth := 1; true; depth++ {
-		update("%05.2f inflating rules %v %v %v        \r", percent, p.context[orig.Locations[0]], depth, len(byExpect))
+
+	for depth := 0; true; depth++ {
 		if len(byExpect) == 0 {
 			break
 		}
+		// we are going to be adding rules at this depth
 		p.rules[depth] = map[string]*rule{}
+		// stay is all locations that will be staying at this level
 		stay := map[string][]int{}
+		// collision is all locations that don't have a unique match
 		collision := map[string][]int{}
 
+		// we need to process the locations that have been
+		// sorted into what they are expecting to find
+		// to be processed in the same order every time
+		// so we sort the keys
 		keys := []string{}
 		for k := range byExpect {
 			keys = append(keys, k)
 		}
 		slices.SortFunc(keys, func(a, b string) int {
+			// we want larger groups first
 			la := len(byExpect[a])
 			lb := len(byExpect[b])
 			if la == lb {
@@ -299,14 +354,15 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 				return cmp.Compare(b, a)
 			}
 			// pick the option with more that go towards the same token
-			return cmp.Compare(len(byExpect[a]), len(byExpect[b]))
+			return cmp.Compare(la, lb)
 		})
-		keys = slices.Compact(keys)
 
+		// skey is keys that will be skipped
 		skey := []string{}
+		// pkey is keys that will be processed
 		pkey := []string{}
 		for _, k := range keys {
-			// lets just peg everything against the most common tokens O_o, or the first
+			// lets just peg everything against the most common tokens O_o, or the first 128 tokens
 			if p.countOrder[k] < 128 || k == "" {
 				pkey = append(pkey, k)
 			} else {
@@ -321,15 +377,15 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 		}
 		// move all skipped keys down a level
 		for _, k := range skey {
-			skip := byExpect[k]
+			locations := byExpect[k]
 
 			// all rules that have collisions need to be shifted down deeper
-			for _, location := range skip {
+			for _, location := range locations {
 				if location == depth {
 					// we need to swap
 					t := stay[k]
 					stay[k] = []int{location}
-					fmt.Println("swapping", location, t)
+					//fmt.Println("swapping", location, t)
 					// work on the swapped values
 					for _, location := range t {
 						key := p.context[location-depth-1]
@@ -338,6 +394,7 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 					continue
 				}
 				key := p.context[location-depth-1]
+				//fmt.Println("passing", k, key)
 				collision[key] = append(collision[key], location)
 			}
 		}
@@ -347,18 +404,33 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 			skip := []int{}
 
 			values, ok := stay[k]
+			// if we don't have one picked,
+			// just grab the first one
 			if !ok {
+				//fmt.Println("grabbing", k)
 				stay[k] = append(stay[k], v[0])
 				v = v[1:]
 				values = stay[k]
+			} else {
+				//fmt.Println("already there", k)
 			}
 
 			// maybe filter to largest group?
+		outer:
 			for _, l := range v {
+				// ensure that what is being produced matches
 				if p.context[values[0]+1] == p.context[l+1] {
 					stay[k] = append(stay[k], l)
 				} else {
-					skip = append(skip, l)
+					// two possible rules produce different tokens
+					// but expect the same one
+					//fmt.Println("rule collision", k, l)
+					skip = append(skip, v...)
+					skip = append(skip, stay[k]...)
+					slices.Sort(skip)
+					slices.Compact(skip)
+					delete(stay, k)
+					break outer
 				}
 			}
 
@@ -368,7 +440,7 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 					// we need to swap
 					t := stay[k]
 					stay[k] = []int{location}
-					fmt.Println("swapping", location, t)
+					//fmt.Println("swapping", location, t)
 					// work on the swapped values
 					for _, location := range t {
 						key := p.context[location-depth-1]
@@ -376,6 +448,7 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 					}
 					continue
 				}
+				//fmt.Println("dropping down", location)
 				key := p.context[location-depth-1]
 				collision[key] = append(collision[key], location)
 			}
@@ -387,6 +460,7 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 			if ok {
 				panic("there should be no rules at this depth or key yet")
 			}
+			//fmt.Println("add rule", depth, expected, locations, p.context[locations[0]+1])
 			// all these rules should produce the same token.
 			p.rules[depth][expected] = &rule{
 				Produce:   p.context[locations[0]+1],

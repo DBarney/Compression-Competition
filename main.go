@@ -488,16 +488,6 @@ func main() {
 	return
 	fmt.Println("regenerated text")
 	// lets try and regenerate it!
-	regenerated := []string{""}
-	for i := 0; i < 51; i++ {
-		prediction := entries[regenerated[i]]
-		next := prediction.predict(regenerated)
-		if meta.Words[i+1] != next {
-			fmt.Println("#", meta.Words[i], next)
-		}
-		regenerated = append(regenerated, next)
-	}
-	fmt.Println(regenerated)
 
 }
 

@@ -6,6 +6,39 @@ import (
 	"testing"
 )
 
+func TestFiles(t *testing.T) {
+	files := []string{
+		"enwik9.100b",
+		"enwik9.1k",
+		"enwik9.10k",
+		"enwik9.100k",
+		"enwik9.1m",
+	}
+	for _, file := range files {
+		file := file
+		t.Run(file, func(t *testing.T) {
+			t.Logf("building file %v", file)
+			meta, err := loadFile(file)
+			if err != nil {
+				t.Fatalf("unable to load test data %v", err)
+			}
+			entries := fromFile(meta)
+			result := predict(entries, "", len(meta.Words))
+			for i, w := range result {
+				if meta.Words[i] != w {
+					t.Logf("%v %v %v", i, w, meta.Words[i])
+
+					entry := entries[meta.Words[i-1]]
+					rules, found := entry.match(meta.Words[:i])
+					t.Logf("%v %v", rules, found)
+					t.Logf("rules %v %v", meta.Words[i-1], entry.rules)
+					t.Fatalf("incorrect generation")
+				}
+			}
+		})
+	}
+}
+
 // func (p *prediction) addToken(prev []string, token string) bool {
 func TestAddRule(t *testing.T) {
 	tests := []struct {
