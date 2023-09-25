@@ -413,7 +413,7 @@ func main() {
 		// I probably should start pre computing these tokens
 		// it takes for ever to generate them
 		//re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
-		re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]+`)
+		re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]*`)
 		chunks := re.FindAll(file, -1)
 		fmt.Println("processing chunks")
 		meta.Words = []string{""}
@@ -466,6 +466,141 @@ func main() {
 			panic(err)
 		}
 	}
+
+	fmt.Println("summary")
+	fmt.Println("word count", len(meta.Words))
+	fmt.Println("unique word count", len(meta.Unique))
+	fmt.Println("buckets")
+	// how many of each section there are
+	buckets := map[int]int{}
+	single := 0
+	for i, word := range meta.CountOrder {
+		idx := i / 256
+		c := meta.Count[word]
+		if c == 1 {
+			single++
+			continue
+		}
+		buckets[idx] += c
+	}
+	// how many section encoding will take
+	fmt.Println("single", single)
+	fmt.Println("avg spacing", len(meta.Words)/single)
+	bytes := []byte{}
+
+	fmt.Println("building out bucked data")
+	wordBucket := map[int][]byte{}
+	singleBucket := []byte{}
+	order := []byte{}
+	bucketWidth := 256
+	maxWord := len(meta.Unique)/bucketWidth + 1
+	for _, word := range meta.Words {
+		c := meta.Count[word]
+		if c <= 1 {
+			singleBucket = binary.AppendUvarint(singleBucket, uint64(len(word)))
+			singleBucket = append(singleBucket, []byte(word)...)
+			order = binary.AppendUvarint(order, uint64(maxWord))
+			continue
+		}
+		id := meta.CountLookup[word]
+		idx := id / bucketWidth
+		rem := id % bucketWidth
+		wordBucket[idx] = append(wordBucket[idx], byte(rem))
+		order = binary.AppendUvarint(order, uint64(idx))
+	}
+	allBytes := []byte{}
+	for i := 0; i < len(wordBucket); i++ {
+		b := wordBucket[i]
+		allBytes = append(allBytes, b...)
+	}
+	bucketSize := len(allBytes)
+	fmt.Println("unique bucket size")
+	testCompression(singleBucket)
+	fmt.Println("order size")
+	testCompression(order)
+	fmt.Println("bucket data")
+	testCompression(allBytes)
+	allBytes = append(allBytes, singleBucket...)
+	allBytes = append(allBytes, order...)
+
+	fmt.Println("everything")
+	testCompression(allBytes)
+
+	for i := 0; i < 10; i++ {
+		fmt.Printf("bucket size %v: %2.2f \n", i, float32(len(wordBucket[i]))/float32(bucketSize))
+	}
+
+	for i := 0; i < 100; i++ {
+		fmt.Printf("%v", meta.CountRLookup[int(wordBucket[0][i])])
+	}
+	fmt.Println("\n", order[:100])
+	return
+	// I need a beter order.
+	// I need the order to be according to count, and then the first time it shows up
+	fmt.Println("sorting according to amount and order of appearance")
+	slices.SortFunc(meta.CountOrder, func(a, b string) int {
+		ca := meta.Count[a]
+		cb := meta.Count[b]
+		// reverse a and b to do decending order
+		if ca == cb {
+			return cmp.Compare(meta.Locations[b][0], meta.Locations[a][0])
+		}
+		return cmp.Compare(cb, ca)
+	})
+
+	var i int
+	for s := 0; s < len(meta.CountOrder)/255; s++ {
+		update("%2.2f writing 256 word chunks\r", float32(s)/float32(len(meta.CountOrder))*100)
+		for i = 0; i < 256; i++ {
+			word := meta.CountOrder[i+255*s]
+			if meta.Count[word] == 1 {
+				continue
+			}
+			bytes = binary.AppendUvarint(bytes, uint64(len(word)))
+			bytes = append(bytes, []byte(word)...)
+		}
+
+		for _, word := range meta.Words {
+			id := meta.CountLookup[word]
+			if id <= s*255 || id > (s+1)*255 {
+				continue
+			}
+			if meta.Count[word] == 1 {
+				continue
+			}
+			bytes = append(bytes, byte(id))
+		}
+	}
+	fmt.Println("")
+	testCompression(bytes)
+
+	fmt.Println("writing out unique words")
+	for j := i; j < len(meta.CountOrder); j++ {
+		word := meta.CountOrder[j]
+		bytes = binary.AppendUvarint(bytes, uint64(len(word)))
+		bytes = append(bytes, []byte(word)...)
+	}
+	// now write out locaion diffs
+	fmt.Println("writing out unique locations")
+	prev := 0
+	for i = 0; i < len(meta.CountOrder); i++ {
+		word := meta.CountOrder[i]
+		if meta.Count[word] != 1 {
+			continue
+		}
+		if len(meta.Locations[word]) > 1 {
+			panic("we should only ever have 1 location at this point")
+		}
+		loc := meta.Locations[word][0]
+		bytes = binary.AppendUvarint(bytes, uint64(prev-loc))
+		prev = loc
+
+	}
+	fmt.Printf("word buffer %v KB in size\n", len(bytes)/1024)
+	fmt.Printf("%2.8f bytes per word\n", float32(len(bytes))/float32(len(meta.Words)))
+
+	testCompression(bytes)
+	return
 	entries := map[string]*prediction{}
 	for i, word := range meta.Words {
 		entries[word] = &prediction{
