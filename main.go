@@ -127,13 +127,7 @@ func loadFile(name string) (*file, error) {
 	}
 	return meta, nil
 }
-func main() {
-
-	meta, err := loadFile(os.Args[1])
-	if err != nil {
-		panic(err)
-	}
-
+func buildBuckets(meta *file) {
 	fmt.Println("summary")
 	fmt.Println("word count", len(meta.Words))
 	fmt.Println("unique word count", len(meta.Unique))
@@ -268,6 +262,9 @@ func main() {
 
 	testCompression(bytes)
 	return
+}
+
+func buildRules(meta *file) {
 	entries := fromFile(meta)
 
 	fmt.Println("building rules")
@@ -510,4 +507,12 @@ func testCompression(buf []byte) {
 		fmt.Printf("%v size: %v KB\n", name, res.Len()/1024)
 	}
 	fmt.Println("")
+}
+
+func main() {
+	meta, err := loadFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	buildRules(meta)
 }
