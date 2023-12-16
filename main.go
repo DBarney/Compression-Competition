@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -38,6 +39,50 @@ type file struct {
 	Lookup       map[string]int
 	RLookup      map[int]string
 	Locations    map[string][]int
+	Mapping      map[string]map[string]int
+}
+
+var commonWords = []string{
+	"the",
+	"of",
+	"and",
+	"&",
+	"in",
+	"to",
+	"a",
+	"quot",
+	"is",
+	"''",
+	"/",
+	"</",
+	"s",
+	"|",
+	"'",
+	">",
+	"as",
+	"that",
+	"id",
+	"by",
+	"for",
+	"=",
+	"was",
+	"amp",
+	"with",
+	"on",
+	"he",
+	"his",
+	"lt",
+	"=&",
+	"it",
+	"or",
+	"gt",
+	"from",
+}
+
+func trimWords(token string) string {
+	return token
+	p := strings.Split(token, " ")
+	return p[len(p)-1]
 }
 
 func loadFile(name string) (*file, error) {
@@ -72,19 +117,37 @@ func loadFile(name string) (*file, error) {
 		// I probably should start pre computing these tokens
 		// it takes for ever to generate them
 		//re := regexp.MustCompile(`(the |and |in |to |a |is |as )?([\w-]+|[^\w]+)( of)?[ ,.;:]+`)
-		re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]*`)
+		common := map[string]bool{}
+		for _, w := range commonWords {
+			common[w] = true
+		}
+		re := regexp.MustCompile(`('&|[[|<)?([\w-]+|[^\w]+)(]])?[> ,.;:|*\n-]*`)
 		chunks := re.FindAll(file, -1)
 		fmt.Println("processing chunks")
 		meta.Words = []string{""}
 		meta.Count = map[string]int{}
 		meta.Locations = map[string][]int{}
+		meta.Mapping = map[string]map[string]int{}
+		prev := ""
 		for i, v := range chunks {
 			token := string(v)
+			token = strings.ToLower(token)
+			token = strings.Trim(token, "<>[] .,;:-|\n")
+			if common[token] {
+				continue
+			}
 			update("%05.2f converting to strings\r", float32(i)/float32(len(chunks))*100)
 			meta.Words = append(meta.Words, token)
 			meta.Count[token]++
 			meta.Unique = append(meta.Unique, token)
 			meta.Locations[token] = append(meta.Locations[token], i+1) // to account for the first ""
+			m := meta.Mapping[prev]
+			if m == nil {
+				m = map[string]int{}
+				meta.Mapping[prev] = m
+			}
+			m[token]++
+			prev = token
 		}
 		meta.Words = append(meta.Words, "") // just incase we try and look beyond the bounds
 
@@ -127,6 +190,7 @@ func loadFile(name string) (*file, error) {
 	}
 	return meta, nil
 }
+
 func buildBuckets(meta *file) {
 	fmt.Println("summary")
 	fmt.Println("word count", len(meta.Words))
@@ -470,22 +534,25 @@ func buildRules(meta *file) {
 	fmt.Printf("tokens maybe %v KB\n", len(sbuff)/1024)
 	fmt.Printf("%.8f bytes / token\n", float32(total+len(sparseRuleBuf)+len(sbuff))/float32(len(meta.Words)))
 
-	fmt.Println("top 10 complex tokens")
-	slices.SortFunc(meta.Unique, func(a, b string) int {
-		//reversed for decending
-		return cmp.Compare(biggestRules[b], biggestRules[a])
-	})
-	for i := 0; i < 128; i++ {
-		fmt.Printf("token %v count:%v rule:%v\n", meta.Unique[i], meta.Count[meta.Unique[i]], biggestRules[meta.Unique[i]])
-	}
-	for i := 0; i < 128; i++ {
-		key := ruleKey[i]
-		fmt.Printf("rule %v '%v'=>'%v' is used %v times\n", ruleMap[key], ruleExpects[key], ruleProduces[key], ruleCount[key])
-	}
-	return
+	/*
+		fmt.Println("top 10 complex tokens")
+		slices.SortFunc(meta.Unique, func(a, b string) int {
+			//reversed for decending
+			return cmp.Compare(biggestRules[b], biggestRules[a])
+		})
+			for i := 0; i < 128; i++ {
+				fmt.Printf("token %v count:%v rule:%v\n", meta.Unique[i], meta.Count[meta.Unique[i]], biggestRules[meta.Unique[i]])
+			}
+			for i := 0; i < 128; i++ {
+				key := ruleKey[i]
+				fmt.Printf("rule %v '%v'=>'%v' is used %v times\n", ruleMap[key], ruleExpects[key], ruleProduces[key], ruleCount[key])
+			}
+	*/
 	fmt.Println("regenerated text")
 	// lets try and regenerate it!
 
+	//result := predict(entries, "", len(meta.Words))
+	//fmt.Println(result)
 }
 
 func testCompression(buf []byte) {
@@ -514,5 +581,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	buildRules(meta)
+	build(meta)
+}
+
+func build(meta *file) {
+	for _, k := range meta.CountOrder {
+		fmt.Println(k, meta.Count[k])
+		if meta.Count[k] < 100 {
+			break
+		}
+	}
+	fmt.Println("number of unique tokens", len(meta.Unique))
+	total := 0
+	for _, c := range meta.Count {
+		total += c
+	}
+	fmt.Println("total tokens", total)
 }

@@ -368,6 +368,15 @@ func (p *prediction) inflateRules(percent float32, update func(string, ...interf
 			} else {
 				skey = append(skey, k)
 			}
+
+			/*
+				// lets peg every rule to a unique token
+				if p.counts[k] == 1 {
+					pkey = append(pkey, k)
+				} else {
+					skey = append(skey, k)
+				}
+			*/
 		}
 
 		// if nothing was a common token, just let one in
