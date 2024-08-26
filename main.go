@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"competition/components"
 )
 
 var needUpdate *time.Ticker
@@ -30,6 +32,7 @@ func update(pattern string, values ...interface{}) {
 }
 
 type file struct {
+	Sections     []string
 	Length       int
 	Words        []string
 	Count        map[string]int
@@ -124,7 +127,7 @@ func loadFile(name string) (*file, error) {
 		}
 		//re := regexp.MustCompile(`('&|[[|<)?([\w-]+|[^\w]+)(]])?[> ,.;:|*\n-]*`)
 		//re := regexp.MustCompile(`([&\[{'"]+)?([\w-]+|[^\w]+)([\]}'"]+)?[,.;:|*-]*[ ]+`)
-		re := regexp.MustCompile(`([\w-]+|[^\w]+)[ ]*`)
+		re := regexp.MustCompile(`(<text xml:space="preserve">|</text>|([\w-]+|[^\w]+)[ ]*)`)
 		chunks := re.FindAll(file, -1)
 		fmt.Println("processing chunks")
 		meta.Length = len(file)
@@ -584,12 +587,27 @@ func testCompression(buf []byte) {
 }
 
 func main() {
+	w, err := components.WikipediaFromFile(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	//fmt.Println(w)
+	for _, page := range w.Pages {
+		components.Process(page, nil)
+	}
+	for _, page := range w.Pages[1:] {
+		b := components.Compress(page)
+		fmt.Println("page", len(b))
+	}
+	//fmt.Println("info", info)
+	return
 	meta, err := loadFile(os.Args[1])
 	if err != nil {
 		panic(err)
 	}
 	//build(meta)
-	graph(meta)
+	//graph(meta)
+	separate(meta)
 }
 
 func build(meta *file) {
@@ -1063,4 +1081,25 @@ func graph(meta *file) {
 
 func (f *file) percent(val int) float32 {
 	return float32(val) / float32(f.Length) * 100
+}
+
+func separate(meta *file) {
+	xml := [][]string{}
+	text := [][]string{}
+	current := []string{}
+	for _, word := range meta.Words {
+		if word == `<text xml:space="preserve">` {
+			current = append(current, word)
+			xml = append(xml, current)
+		}
+		if word == "</text>" {
+			text = append(text, current)
+			current = []string{word}
+		}
+		text = append(text, current)
+	}
+	fmt.Println("xml", len(xml))
+	fmt.Println("text", len(text))
+	fmt.Println("current", len(current))
+	fmt.Println("words", meta.Length)
 }
